@@ -12,6 +12,10 @@ spec:
       labels:
         app: {{ .Values.name }}
     spec:
+      volumes:
+        - name: db-credentials
+          secret:
+            secretName: {{ .Values.name }}-db
       containers:
         - name: {{ .Values.name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -34,6 +38,17 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.name }}-db
                   key: password
+            # Secret zusätzlich als Volume: kubelet aktualisiert die Dateien bei
+            # Änderungen, die App stellt den Hikari-Pool darauf um.
+            - name: APP_DBCREDENTIALS_DIR
+              value: /etc/pool-db
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: health,dbcredentials
+          volumeMounts:
+            # kein subPath, sonst bekommt der Container keine Updates
+            - name: db-credentials
+              mountPath: /etc/pool-db
+              readOnly: true
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           startupProbe:

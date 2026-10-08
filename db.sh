@@ -38,7 +38,7 @@ fi
 # und wird so nicht fälschlich als "bereit" erkannt.
 echo -n "Warte auf MySQL "
 for _ in $(seq 1 60); do
-  if docker exec "$CONTAINER_NAME" mysql -h 127.0.0.1 -u"$DB_USER" -p"$DB_PASSWORD" -e 'SELECT 1' "$DB_NAME" >/dev/null 2>&1; then
+  if docker exec "$CONTAINER_NAME" mysql -h 127.0.0.1 -uroot -p"$ROOT_PASSWORD" -e 'SELECT 1' >/dev/null 2>&1; then
     echo
     echo "MySQL ist bereit: jdbc:mysql://localhost:$PORT/$DB_NAME (User: $DB_USER)"
     exit 0
