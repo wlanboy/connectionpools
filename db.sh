@@ -13,11 +13,8 @@ PORT=3306
 # Container läuft bereits
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   echo "Container $CONTAINER_NAME läuft bereits."
-  exit 0
-fi
-
 # Container existiert, ist aber gestoppt
-if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+elif docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   echo "Starte vorhandenen Container $CONTAINER_NAME ..."
   docker start "$CONTAINER_NAME" >/dev/null
 else
@@ -40,6 +37,10 @@ echo -n "Warte auf MySQL "
 for _ in $(seq 1 60); do
   if docker exec "$CONTAINER_NAME" mysql -h 127.0.0.1 -uroot -p"$ROOT_PASSWORD" -e 'SELECT 1' >/dev/null 2>&1; then
     echo
+    # Erlaubt dem App-User RETAIN CURRENT / DISCARD OLD PASSWORD am eigenen
+    # Account, damit change-password.sh ohne root auskommt
+    docker exec "$CONTAINER_NAME" mysql -h 127.0.0.1 -uroot -p"$ROOT_PASSWORD" \
+      -e "GRANT APPLICATION_PASSWORD_ADMIN ON *.* TO '$DB_USER'@'%'" 2>/dev/null
     echo "MySQL ist bereit: jdbc:mysql://localhost:$PORT/$DB_NAME (User: $DB_USER)"
     exit 0
   fi
