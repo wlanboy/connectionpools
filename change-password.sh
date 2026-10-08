@@ -2,7 +2,7 @@
 # Rotiert das DB-Passwort ohne Downtime:
 #  1. MySQL: neues Passwort setzen, altes bleibt gültig (Dual Password)
 #  2. Kubernetes-Secret aktualisieren und Pods zum Volume-Sync anstoßen
-#  3. Warten, bis jeder Pod seinen Hikari-Pool umgestellt hat
+#  3. Warten, bis jeder Pod das neue Secret sieht (Hikari liest es bei jeder neuen Verbindung)
 #  4. MySQL: altes Passwort verwerfen
 # Läuft als App-User selbst, ohne root. Voraussetzung (einmalig als root):
 #   GRANT APPLICATION_PASSWORD_ADMIN ON *.* TO 'pool'@'%';
@@ -81,23 +81,36 @@ jq -n --arg p "$NEW_PASSWORD" --arg v "$VERSION" '{stringData: {password: $p, ve
   | patch_secret
 
 # kubelet synchronisiert Secret-Volumes nur periodisch (bis ~1-2 min).
-# Eine Pod-Änderung löst sofort einen Sync aus.
-PODS=$(kubectl get pods -n "$NAMESPACE" -l app="$APP" --field-selector=status.phase=Running -o name)
+# Eine Pod-Änderung löst sofort einen Sync aus. Auch Pods, die gerade starten,
+# werden erfasst: Ihr Volume kann noch den alten Stand enthalten.
+PODS=$(kubectl get pods -n "$NAMESPACE" -l app="$APP" \
+  --field-selector=status.phase!=Succeeded,status.phase!=Failed -o name)
 for pod in $PODS; do
   kubectl annotate "$pod" -n "$NAMESPACE" db-credentials/version="$VERSION" --overwrite >/dev/null
 done
 
-# 3. Warten, bis jeder Pod die neue Version aktiv hat
-echo "3/4 Warte auf Umstellung der Pods"
+# 3. Warten, bis jedes Pod-Volume die neue Version enthält.
+#    Ein noch startender Pod antwortet erst, wenn er läuft.
+echo "3/4 Warte auf Secret-Sync in den Pods"
 deadline=$((SECONDS + TIMEOUT))
+pod_gone() {
+  ! kubectl get "$1" -n "$NAMESPACE" >/dev/null 2>&1
+}
+pod_synced() {
+  status=$(kubectl exec "$1" -n "$NAMESPACE" -c "$APP" -- \
+      curl -sf localhost:8080/actuator/dbcredentials 2>/dev/null) \
+    && [[ $(jq -r .version <<<"$status") == "$VERSION" ]]
+}
 for pod in $PODS; do
   echo -n "    $pod "
-  until status=$(kubectl exec "$pod" -n "$NAMESPACE" -c "$APP" -- \
-        curl -sf localhost:8080/actuator/dbcredentials 2>/dev/null) \
-      && [[ $(jq -r .version <<<"$status") == "$VERSION" ]]; do
+  until pod_synced "$pod"; do
+    if pod_gone "$pod"; then
+      echo " entfernt"
+      continue 2
+    fi
     if ((SECONDS > deadline)); then
       echo
-      echo "Timeout: $pod hat nach ${TIMEOUT}s nicht umgestellt." >&2
+      echo "Timeout: $pod sieht nach ${TIMEOUT}s nicht die neue Version." >&2
       echo "Beide Passwörter bleiben gültig. Logs: kubectl logs $pod -n $NAMESPACE -c $APP" >&2
       exit 1
     fi
@@ -108,7 +121,7 @@ for pod in $PODS; do
 done
 
 # 4. Altes Passwort verwerfen. Bestehende Sessions bleiben davon unberührt,
-#    alte Pool-Verbindungen werden bei Rückgabe an den Pool geschlossen.
+#    alte Pool-Verbindungen laufen bis zu ihrer maxLifetime weiter.
 echo "4/4 MySQL: altes Passwort verwerfen"
 mysql_as "$NEW_PASSWORD" <<SQL
 ALTER USER USER() DISCARD OLD PASSWORD;

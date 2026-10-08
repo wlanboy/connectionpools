@@ -6,7 +6,7 @@ Das Passwort des DB-Users `pool` lässt sich im laufenden Betrieb wechseln. Kein
 |------|-------|---------|
 | MySQL Dual Password | `change-password.sh` | altes und neues Passwort gelten während der Umstellung parallel |
 | Secret als Volume | `pool-chart/templates/deployment.yaml`, `secret.yaml` | kubelet schreibt das neue Passwort in den laufenden Pod |
-| Hikari-Umstellung | `DbCredentialsRotator`, `DbCredentialsEndpoint` | Pool übernimmt das neue Passwort, Skript prüft den Stand |
+| Hikari-Credentials-Provider | `SecretFileCredentialsProvider`, `SecretFileCredentialsInstaller`, `DbCredentialsEndpoint` | Hikari liest das Passwort bei jeder neuen Verbindung aus der Datei, Skript prüft den Stand |
 
 ## Ablauf
 
@@ -15,7 +15,7 @@ change-password.sh
   0. k8s:    neues Passwort als pending-password im Secret ablegen
   1. MySQL:  ALTER USER ... RETAIN CURRENT PASSWORD   → alt + neu gültig
   2. k8s:    Secret patchen (password + version), Pods annotieren
-  3. Pods:   Rotator liest Datei, testet, tauscht Credentials, Soft-Evict
+  3. Pods:   kubelet schreibt die Datei, neue Verbindungen nutzen das neue Passwort
              Skript pollt /actuator/dbcredentials bis version == neu
   4. MySQL:  ALTER USER ... DISCARD OLD PASSWORD      → nur noch neu gültig
 ```
@@ -82,38 +82,42 @@ stringData:
 
 `database.password` in `values.yaml` ist damit nur noch der Startwert beim ersten Install.
 
-## 3. Anwendung: Hikari-Pool umstellen
+## 3. Anwendung: Hikari-Credentials-Provider
 
-`DbCredentialsRotator` prüft alle 5 Sekunden (`app.db-credentials.poll-interval`) die Datei `password` im gemounteten Verzeichnis. `@EnableScheduling` in `PoolApplication` aktiviert den Job. Weicht das Passwort vom aktuellen ab, passiert Folgendes:
+Hikari (ab 6.x, hier 7.0.2) kennt das Interface `HikariCredentialsProvider`. Ist ein Provider gesetzt, fragt Hikari ihn bei **jedem neuen Verbindungsaufbau** nach Username und Passwort. `SecretFileCredentialsProvider` liest dafür die Datei `password` aus dem gemounteten Secret:
 
 ```java
-// 1. Neues Passwort mit separater Verbindung testen.
-//    Schlägt das fehl, bleibt der Pool unverändert. Nächster Versuch beim nächsten Poll.
-try (Connection probe = DriverManager.getConnection(dataSource.getJdbcUrl(), current.getUsername(), password)) {
-    probe.isValid(5);
+public Credentials getCredentials() {
+    try {
+        String password = Files.readString(dir.resolve("password")).strip();
+        if (!password.equals(lastKnown.getPassword())) {
+            lastKnown = Credentials.of(lastKnown.getUsername(), password);
+        }
+    } catch (IOException ex) {
+        // Datei nicht lesbar: letztes bekanntes Passwort weiterverwenden
+    }
+    return lastKnown;
 }
-
-// 2. Credentials tauschen. Hikari liest sie bei jeder neuen Verbindung.
-dataSource.getHikariConfigMXBean().setCredentials(Credentials.of(current.getUsername(), password));
-
-// 3. Soft-Evict: freie Verbindungen sofort schließen, belegte erst bei Rückgabe an den Pool.
-dataSource.getHikariPoolMXBean().softEvictConnections();
 ```
 
-Durch den Soft-Evict arbeiten laufende Requests mit ihrer bisherigen Verbindung zu Ende. Neue Verbindungen baut Hikari mit dem neuen Passwort auf.
+Den Provider hängt `SecretFileCredentialsInstaller` an die `HikariDataSource`. Der Installer ist ein `BeanPostProcessor` und greift nur, wenn `app.db-credentials.dir` gesetzt ist. Das muss vor dem Start des Pools passieren, danach ist die Hikari-Konfiguration versiegelt. Startwert für `lastKnown` ist das Passwort aus `spring.datasource.password`.
 
-Der Test in Schritt 1 deckt auch den Fall ab, dass das Secret schon aktualisiert ist, MySQL das Passwort aber noch nicht kennt. Der Pool behält dann einfach die alten Credentials.
+Folgen:
+
+- Es gibt keinen Poll-Job und kein `@EnableScheduling`. Sobald kubelet die Datei aktualisiert, nutzt die nächste neue Verbindung das neue Passwort.
+- Bestehende Verbindungen werden nicht aktiv getauscht. Sie laufen bis zu ihrer `maxLifetime` (Standard 30 min) weiter. Das ist unkritisch, denn MySQL prüft das Passwort nur beim Login, offene Sessions überleben `DISCARD OLD PASSWORD`.
+- Ein Pod, der während der Rotation startet, liest das Passwort aus der Datei und nicht aus der Umgebungsvariable. Er braucht also keine Sonderbehandlung.
+- Der Provider testet das neue Passwort nicht vorab. Steht im Secret ein Passwort, das MySQL nicht kennt, schlagen neue Verbindungen fehl. Deshalb setzt `change-password.sh` das Passwort immer zuerst in MySQL (Schritt 1) und erst danach im Secret (Schritt 2). Das Secret nicht von Hand ändern.
 
 ## 4. Status-Endpoint
 
-`DbCredentialsEndpoint` stellt `/actuator/dbcredentials` bereit. Das Passwort selbst wird nie ausgegeben:
+`DbCredentialsEndpoint` stellt `/actuator/dbcredentials` bereit. `version` ist der Inhalt der Datei `version` im Secret-Volume, also der Stand, mit dem die nächste neue Verbindung aufgebaut wird. Das Passwort selbst wird nie ausgegeben:
 
 ```json
-{ "version": "20261008184500", "rotatedAt": "2026-10-08T16:45:03Z",
-  "active": 1, "idle": 9, "total": 10, "waiting": 0 }
+{ "version": "20261008184500", "active": 1, "idle": 9, "total": 10, "waiting": 0 }
 ```
 
-Das Skript wartet für jeden Pod, bis `version` der neuen Version entspricht. Erst dann wird das alte Passwort in MySQL verworfen.
+Das Skript wartet für jeden Pod, bis `version` der neuen Version entspricht, also bis kubelet das Secret in den Pod geschrieben hat. Erst dann wird das alte Passwort in MySQL verworfen.
 
 ## 5. Das Skript `change-password.sh`
 
@@ -126,7 +130,7 @@ Username und aktuelles Passwort liest das Skript aus dem Secret.
 
 Einige Details:
 
-- **Fortsetzen nach Abbruch:** Vor Schritt 1 legt das Skript das neue Passwort als `pending-password` (und `pending-version`) im Secret ab. Findet ein späterer Lauf diese Schlüssel, nimmt er dasselbe Passwort statt eines neuen. Ein neues Passwort mit `RETAIN CURRENT PASSWORD` würde das Passwort aus dem ersten Lauf zum Secondary machen und das ursprüngliche verwerfen, mit dem Pods eventuell noch arbeiten. Schritt 1 entfällt, wenn der Login mit dem neuen Passwort schon klappt. Nach Schritt 4 entfernt das Skript die `pending-*`-Schlüssel. Der Rotator liest nur `password` und `version`, die zusätzlichen Dateien im Volume stören nicht.
+- **Fortsetzen nach Abbruch:** Vor Schritt 1 legt das Skript das neue Passwort als `pending-password` (und `pending-version`) im Secret ab. Findet ein späterer Lauf diese Schlüssel, nimmt er dasselbe Passwort statt eines neuen. Ein neues Passwort mit `RETAIN CURRENT PASSWORD` würde das Passwort aus dem ersten Lauf zum Secondary machen und das ursprüngliche verwerfen, mit dem Pods eventuell noch arbeiten. Schritt 1 entfällt, wenn der Login mit dem neuen Passwort schon klappt. Nach Schritt 4 entfernt das Skript die `pending-*`-Schlüssel. Provider und Endpoint lesen nur `password` und `version`, die zusätzlichen Dateien im Volume stören nicht.
 
 - **Passwort nicht in der Prozessliste:** Der Secret-Patch wird über stdin übergeben, nicht als Argument.
   ```bash
@@ -138,11 +142,12 @@ Einige Details:
   kubectl annotate "$pod" -n "$NAMESPACE" db-credentials/version="$VERSION" --overwrite
   ```
 - **SQL-Escaping:** `\` und `'` im Passwort werden escaped, bevor es im `ALTER USER` landet.
-- **Timeout:** Stellt ein Pod nicht innerhalb von 180 Sekunden um, bricht das Skript ab, ohne das alte Passwort zu verwerfen.
+- **Startende Pods:** Das Skript erfasst alle Pods außer `Succeeded`/`Failed`, also auch solche, die gerade starten. Deren Volume kann noch den alten Stand enthalten. Das Skript wartet, bis sie laufen und die neue Version melden. Pods, die währenddessen verschwinden, werden übersprungen.
+- **Timeout:** Meldet ein Pod nicht innerhalb von 180 Sekunden die neue Version, bricht das Skript ab, ohne das alte Passwort zu verwerfen.
 
 ## Einschränkungen
 
-- Pods lesen das Passwort beim Start aus der Umgebungsvariable, also den Stand des Secrets zum Startzeitpunkt. Ein abweichender Stand wird danach über das Volume nachgezogen.
-- Das Skript wartet nur auf Pods, die in Schritt 2 im Status `Running` sind. Ein Pod, der genau während der Rotation startet, wird nicht abgewartet. Er stellt zwar über den Rotator um, aber Schritt 4 kann vorher laufen.
+- Die Umgebungsvariable mit dem Passwort dient nur noch als Fallback, wenn die Datei nicht lesbar ist.
+- Alte Verbindungen werden nicht sofort geschlossen, sondern erst nach `maxLifetime`. Soll ein kompromittiertes Passwort sofort aus allen Verbindungen verschwinden, ist zusätzlich ein Soft-Evict (`HikariPoolMXBean.softEvictConnections()`) oder ein Rolling Restart nötig.
 - Der Container-Name ist für die lokale Docker-MySQL fest im Skript hinterlegt (`DB_CONTAINER`).
 - Ein `helm upgrade` während einer unterbrochenen Rotation übernimmt die `pending-*`-Schlüssel per `lookup` mit. Das ist gewollt, der nächste Lauf setzt fort.

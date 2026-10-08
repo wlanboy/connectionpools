@@ -1,38 +1,44 @@
 package com.example.pool.credentials;
 
-import java.time.Instant;
+import java.sql.SQLException;
+
+import javax.sql.DataSource;
 
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.stereotype.Component;
 
+import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.HikariPoolMXBean;
 
 /**
- * {@code /actuator/dbcredentials}: aktive Secret-Version und Pool-Zustand. change-password.sh
- * wartet hierüber, bis jeder Pod umgestellt hat. Das Passwort selbst wird nie ausgegeben.
+ * {@code /actuator/dbcredentials}: Secret-Version, mit der neue Verbindungen aufgebaut werden,
+ * und Pool-Zustand. change-password.sh wartet hierüber, bis kubelet das neue Secret in jeden Pod
+ * geschrieben hat. Das Passwort selbst wird nie ausgegeben.
  */
 @Component
 @Endpoint(id = "dbcredentials")
 public class DbCredentialsEndpoint {
 
-	record Status(String version, Instant rotatedAt, int active, int idle, int total, int waiting) {
+	record Status(String version, int active, int idle, int total, int waiting) {
 	}
 
-	private final DbCredentialsRotator rotator;
+	private final HikariDataSource dataSource;
 
-	public DbCredentialsEndpoint(DbCredentialsRotator rotator) {
-		this.rotator = rotator;
+	public DbCredentialsEndpoint(DataSource dataSource) throws SQLException {
+		this.dataSource = dataSource.unwrap(HikariDataSource.class);
 	}
 
 	@ReadOperation
 	public Status status() {
-		HikariPoolMXBean pool = rotator.pool();
+		String version = dataSource.getCredentialsProvider() instanceof SecretFileCredentialsProvider provider
+				? provider.version() : "none";
+		HikariPoolMXBean pool = dataSource.getHikariPoolMXBean();
 		if (pool == null) {
-			return new Status(rotator.version(), rotator.rotatedAt(), 0, 0, 0, 0);
+			return new Status(version, 0, 0, 0, 0);
 		}
-		return new Status(rotator.version(), rotator.rotatedAt(), pool.getActiveConnections(),
-				pool.getIdleConnections(), pool.getTotalConnections(), pool.getThreadsAwaitingConnection());
+		return new Status(version, pool.getActiveConnections(), pool.getIdleConnections(),
+				pool.getTotalConnections(), pool.getThreadsAwaitingConnection());
 	}
 
 }
