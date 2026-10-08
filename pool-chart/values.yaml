@@ -1,0 +1,32 @@
+replicaCount: 1
+name: pool
+
+image:
+  repository: localhost:5001/pool
+  tag: latest
+  pullPolicy: Always
+
+service:
+  port: 8080
+
+hosts:
+  - pool.localhost
+
+istio:
+  gatewaySelector:
+    istio: ingressgateway
+
+database:
+  # Name des MySQL-Containers im Docker-Netzwerk "kind"
+  externalName: mysql-pool
+  port: 3306
+  name: pool
+  username: pool
+  password: poolsecret
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 300Mi
+  limits:
+    memory: 500Mi

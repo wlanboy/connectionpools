@@ -1,0 +1,14 @@
+# Zeigt auf den MySQL-Docker-Container im kind-Netzwerk.
+# Der Port-Name "tcp-mysql" sagt Istio, dass es reines TCP ist
+# (MySQL ist server-first, Protocol Sniffing würde hängen).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  type: ExternalName
+  externalName: {{ .Values.database.externalName }}
+  ports:
+    - name: tcp-mysql
+      port: {{ .Values.database.port }}
+      appProtocol: tcp

@@ -1,0 +1,15 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ .Values.name }}
+spec:
+  hosts:
+    {{- toYaml .Values.hosts | nindent 4 }}
+  gateways:
+    - {{ .Values.name }}-gateway
+  http:
+    - route:
+        - destination:
+            host: {{ .Values.name }}
+            port:
+              number: {{ .Values.service.port }}
