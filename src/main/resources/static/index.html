@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Messages</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <h1>Messages</h1>
+
+    <form id="new-message">
+      <input id="text" type="text" maxlength="1000" placeholder="Neue Message" required autofocus>
+      <button type="submit">Hinzufügen</button>
+    </form>
+
+    <p id="error" hidden></p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>OK</th>
+          <th>Zeit</th>
+          <th>Message</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="messages"></tbody>
+    </table>
+    <p id="empty" hidden>Noch keine Messages.</p>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
