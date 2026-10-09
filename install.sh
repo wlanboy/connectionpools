@@ -30,7 +30,7 @@ kubectl label namespace "$NAMESPACE" istio-injection=enabled --overwrite
 # 4. Helm Chart deployen (eindeutiger Tag erzwingt neuen Rollout)
 helm upgrade --install "$APP" ./pool-chart -n "$NAMESPACE" \
   --set image.repository="$IMAGE" \
-  --set image.tag="$TAG"
+  --set-string image.tag="$TAG"
 kubectl rollout status "deployment/$APP" -n "$NAMESPACE" --timeout=180s
 
 echo "Fertig: http://pool.localhost/"
