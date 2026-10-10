@@ -8,12 +8,13 @@ Die Anwendung selbst ist eine kleine Nachrichtenliste (`/api/messages`, Web-UI u
 
 | Teil | Wo | Aufgabe |
 |------|----|---------|
-| MySQL-Container | `db.sh` | DB `pool`, User `pool`, Privileg für Dual Password |
+| MySQL-Container | `db.sh` | DB `pool`, User `pool` (plus `pool_a`/`pool_b` für den A/B-Wechsel), Privileg für Dual Password |
 | Image + Deployment | `install.sh`, `Dockerfile`, `pool-chart/` | Image bauen, in `localhost:5001` pushen, Helm-Release installieren |
 | Secret als Volume | `pool-chart/templates/secret.yaml`, `deployment.yaml` | kubelet schreibt ein geändertes Passwort in den laufenden Pod |
 | Credentials-Provider | `src/main/java/com/example/pool/credentials/` | Hikari liest das Passwort bei jeder neuen Verbindung aus der Datei |
 | Status-Endpoint | `/actuator/dbcredentials` | zeigt Secret-Version und Pool-Zustand je Pod |
 | Rotation | `change-password.sh` | Passwort in MySQL und Secret wechseln |
+| Rotation (A/B) | `change-user.sh` | zwischen zwei DB-Usern wechseln, ohne Dual Password |
 | Lasttest | `test.sh` | ruft die API jede Sekunde auf und zählt Fehler |
 
 Voraussetzungen: Docker, ein kind-Cluster mit Istio-Ingressgateway, eine lokale Registry auf `localhost:5001`, dazu `kubectl`, `helm`, `jq` und `openssl`.
@@ -26,6 +27,7 @@ Voraussetzungen: Docker, ein kind-Cluster mit Istio-Ingressgateway, eine lokale 
    helm status pool -n pool Release prüfen
 3. ./test.sh                in einem zweiten Terminal: Dauerlast
 4. ./change-password.sh     Passwort rotieren, test.sh meldet 0 Fehler
+   oder ./change-user.sh    auf den anderen DB-User wechseln
 ```
 
 ## 1. db.sh
@@ -45,6 +47,8 @@ GRANT APPLICATION_PASSWORD_ADMIN ON *.* TO 'pool'@'%';
 ```
 
 Damit darf `pool` an seinem eigenen Account `RETAIN CURRENT PASSWORD` und `DISCARD OLD PASSWORD` ausführen. `change-password.sh` braucht dadurch kein root-Passwort.
+
+Außerdem legt es die User `pool_a` / `poolsecret_a` und `pool_b` / `poolsecret_b` an (`CREATE USER IF NOT EXISTS`), mit denselben Rechten auf die DB `pool` und demselben Privileg. `change-user.sh` schaltet zwischen ihnen um.
 
 ## 2. install.sh und helm upgrade --install
 
@@ -100,13 +104,15 @@ Env-Variablen aus einem Secret werden nur beim Containerstart gelesen. Deshalb i
 
 `SecretFileCredentialsInstaller` hängt beim Start einen `SecretFileCredentialsProvider` an die `HikariDataSource`, sofern `app.db-credentials.dir` gesetzt ist (im Chart über `APP_DBCREDENTIALS_DIR`). Hikari fragt den Provider bei jedem neuen Verbindungsaufbau, der Provider liest die Datei. Bestehende Verbindungen laufen bis zu ihrer `maxLifetime` weiter. Das ist unkritisch, weil MySQL das Passwort nur beim Login prüft.
 
+Der Provider liest `username` und `password`. Beide Dateien kommen aus demselben Secret-Stand: kubelet legt jeden Stand in einem eigenen Verzeichnis ab und tauscht den Symlink `..data` atomar, der Provider löst diesen Symlink einmal auf und liest beide Dateien von dort. So kann er nicht den neuen User mit dem alten Passwort kombinieren.
+
 `/actuator/dbcredentials` liefert je Pod:
 
 ```json
-{ "version": "20261008184500", "active": 1, "idle": 9, "total": 10, "waiting": 0 }
+{ "version": "20261008184500", "username": "pool_a", "active": 1, "idle": 9, "total": 10, "waiting": 0 }
 ```
 
-`version` ist der Stand, mit dem die nächste neue Verbindung aufgebaut wird. Das Passwort wird nie ausgegeben.
+`version` und `username` beschreiben den Stand, mit dem die nächste neue Verbindung aufgebaut wird. Das Passwort wird nie ausgegeben.
 
 ## 5. change-password.sh
 
@@ -161,6 +167,31 @@ Schritt 4 neu                   neu                     neu
 ```
 
 Details und Einschränkungen: [change.md](change.md).
+
+## 6. change-user.sh: zwei User im Wechsel
+
+```bash
+./change-user.sh
+```
+
+Statt das Passwort eines Users zu ändern, schaltet die Anwendung auf einen anderen User um. `pool_a` und `pool_b` existieren dauerhaft mit festen Passwörtern, in der Datenbank ändert sich beim Wechsel nichts, root ist nicht nötig. Das Verfahren braucht kein Dual Password und funktioniert deshalb auch mit PostgreSQL, Oracle oder SQL Server. Beim ersten Lauf ist der aktive User noch `pool`, das Skript wechselt dann auf `pool_a`, danach immer zwischen `pool_a` und `pool_b`.
+
+| Schritt | Aktion |
+|---------|--------|
+| 0 | Ziel-User und Version als `pending-username` / `pending-version` im Secret ablegen |
+| 1 | Login als Ziel-User prüfen, sonst Abbruch vor jeder Änderung |
+| 2 | `username`, `password` und `version` gemeinsam im Secret patchen, Pods annotieren |
+| 3 | warten, bis jeder Pod die neue `version` und den neuen `username` meldet, `pending-*` entfernen |
+
+Neue Verbindungen nutzen den neuen User, sobald kubelet das Secret in den Pod geschrieben hat. Offene Verbindungen des alten Users laufen bis zu ihrer `maxLifetime` weiter. Beide User bleiben gültig, deshalb geht dabei kein Request verloren.
+
+Bricht das Skript ab, setzt ein erneuter Lauf den Wechsel auf denselben User fort, statt zurückzuschalten. `change-password.sh` und `change-user.sh` erkennen gegenseitig eine unterbrochene Rotation und brechen dann ab.
+
+Worauf man beim A/B-Wechsel achten muss:
+
+- Beide User brauchen dieselben Rechte. Neue Grants immer an beide vergeben (in `db.sh`).
+- In MySQL gehören Tabellen der Datenbank, nicht dem User. In PostgreSQL gehören sie dem User, der sie anlegt. Dort sollten beide User Mitglied einer gemeinsamen Owner-Rolle sein, sonst kann `pool_b` keine Tabellen von `pool_a` ändern.
+- Die Passwörter stehen in `db.sh` und `change-user.sh`. Ändert man sie an einer Stelle, muss die andere mitgezogen werden.
 
 ## Testen
 
