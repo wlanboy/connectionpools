@@ -207,6 +207,8 @@ Worauf man beim A/B-Wechsel achten muss:
 - In MySQL gehören Tabellen der Datenbank, nicht dem User. In PostgreSQL gehören sie dem User, der sie anlegt. Dort sollten beide User Mitglied einer gemeinsamen Owner-Rolle sein, sonst kann `pool_b` keine Tabellen von `pool_a` ändern.
 - Die Passwörter stehen in `db.sh` und `change-user.sh`. Ändert man sie an einer Stelle, muss die andere mitgezogen werden.
 
+Einbau in eine bestehende Anwendung: [switch.md](switch.md).
+
 ## Testen
 
 ```bash
