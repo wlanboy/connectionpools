@@ -29,6 +29,11 @@ DB_USER=$(secret_value username)
 CURRENT_PASSWORD=$(secret_value password)
 PENDING_PASSWORD=$(secret_value pending-password)
 
+if [[ -n $(secret_value pending-username) ]]; then
+  echo "Unterbrochener User-Wechsel gefunden. Erst ./change-user.sh erneut ausführen." >&2
+  exit 1
+fi
+
 # SQL als App-User mit dem übergebenen Passwort ausführen
 mysql_as() {
   docker exec -i -e MYSQL_PWD="$1" "$DB_CONTAINER" mysql -h 127.0.0.1 -u"$DB_USER"
