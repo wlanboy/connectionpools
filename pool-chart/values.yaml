@@ -17,8 +17,8 @@ istio:
     istio: ingressgateway
 
 database:
-  # Name des MySQL-Containers im Docker-Netzwerk "kind"
-  externalName: mysql-pool
+  # IP oder Hostname der MySQL, setzt install.sh aus db.env
+  host: ""
   port: 3306
   name: pool
   username: pool

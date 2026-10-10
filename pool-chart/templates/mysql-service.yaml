@@ -1,14 +1,39 @@
-# Zeigt auf den MySQL-Docker-Container im kind-Netzwerk.
+# Zeigt auf die MySQL außerhalb des Clusters (database.host, aus db.env).
+# Eine IP geht nicht als ExternalName, dafür Service ohne Selector + EndpointSlice.
 # Der Port-Name "tcp-mysql" sagt Istio, dass es reines TCP ist
 # (MySQL ist server-first, Protocol Sniffing würde hängen).
+{{- $host := required "database.host fehlt (db.env)" .Values.database.host }}
+{{- $isIP := regexMatch "^[0-9]+(\\.[0-9]+){3}$" $host }}
 apiVersion: v1
 kind: Service
 metadata:
   name: mysql
 spec:
+  {{- if $isIP }}
+  type: ClusterIP
+  {{- else }}
   type: ExternalName
-  externalName: {{ .Values.database.externalName }}
+  externalName: {{ $host }}
+  {{- end }}
   ports:
     - name: tcp-mysql
       port: {{ .Values.database.port }}
       appProtocol: tcp
+{{- if $isIP }}
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: mysql
+  labels:
+    kubernetes.io/service-name: mysql
+addressType: IPv4
+ports:
+  - name: tcp-mysql
+    port: {{ .Values.database.port }}
+    protocol: TCP
+    appProtocol: tcp
+endpoints:
+  - addresses:
+      - {{ $host }}
+{{- end }}
