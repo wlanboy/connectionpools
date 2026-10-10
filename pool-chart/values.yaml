@@ -11,6 +11,7 @@ service:
 
 hosts:
   - pool.localhost
+  - pool.gmk.lan
 
 istio:
   gatewaySelector:
