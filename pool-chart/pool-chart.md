@@ -30,6 +30,21 @@ kubectl rollout status deployment/pool -n pool --timeout=180s
 
 Das Secret `pool-db` bleibt beim Upgrade unverändert (per `lookup`), ein rotiertes Passwort wird also nicht zurückgesetzt.
 
+### Secret zurücksetzen
+
+Wurde die DB mit `db-uninstall.sh` und `db.sh` neu aufgesetzt, kennt sie nur noch `pool` / `poolsecret`. Das Secret enthält aber weiter die rotierten Zugangsdaten, neue Pods scheitern dann mit `Access denied for user ...`. Secret löschen, damit das Chart es wieder aus `values.yaml` anlegt:
+
+```bash
+kubectl delete secret pool-db -n pool
+helm upgrade --install pool ./pool-chart -n pool \
+  --set image.repository=localhost:5001/pool \
+  --set-string image.tag=<TAG>
+kubectl rollout restart deployment/pool -n pool
+kubectl rollout status deployment/pool -n pool --timeout=180s
+```
+
+Das Secret ist danach wieder auf dem Startwert (Version `initial`). `rollout restart` ist nötig, wenn sich `image.tag` nicht ändert, denn dann startet Helm keine neuen Pods. Laufende Pods mit kaputtem Pool würden sonst erst nach dem nächsten Volume-Sync von kubelet umstellen.
+
 Zurück auf eine frühere Revision:
 
 ```bash
