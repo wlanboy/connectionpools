@@ -32,7 +32,7 @@ Das Secret `pool-db` bleibt beim Upgrade unverändert (per `lookup`), ein rotier
 
 ### Secret zurücksetzen
 
-Wurde die DB mit `db-uninstall.sh` und `db.sh` neu aufgesetzt, kennt sie nur noch `pool` / `poolsecret`. Das Secret enthält aber weiter die rotierten Zugangsdaten, neue Pods scheitern dann mit `Access denied for user ...`. Secret löschen, damit das Chart es wieder aus `values.yaml` anlegt:
+Wird die DB neu aufgesetzt, kennt sie nur noch `pool` / `poolsecret`. Enthält das Secret noch rotierte Zugangsdaten, scheitern neue Pods mit `Access denied for user ...`. `db-uninstall.sh` löscht das Secret deshalb mit, wenn es das Volume entfernt. Wurde die DB auf anderem Weg neu aufgesetzt, Secret von Hand löschen, damit das Chart es wieder aus `values.yaml` anlegt:
 
 ```bash
 kubectl delete secret pool-db -n pool
