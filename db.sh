@@ -41,7 +41,17 @@ for _ in $(seq 1 60); do
     # Account, damit change-password.sh ohne root auskommt
     docker exec "$CONTAINER_NAME" mysql -h 127.0.0.1 -uroot -p"$ROOT_PASSWORD" \
       -e "GRANT APPLICATION_PASSWORD_ADMIN ON *.* TO '$DB_USER'@'%'" 2>/dev/null
-    echo "MySQL ist bereit: jdbc:mysql://localhost:$PORT/$DB_NAME (User: $DB_USER)"
+    # Zwei weitere User für change-user.sh (A/B-Wechsel), gleiche Rechte wie $DB_USER.
+    # Feste Passwörter poolsecret_a / poolsecret_b, change-user.sh kennt sie auch.
+    for suffix in a b; do
+      user=${DB_USER}_$suffix
+      docker exec -i "$CONTAINER_NAME" mysql -h 127.0.0.1 -uroot -p"$ROOT_PASSWORD" 2>/dev/null <<SQL
+CREATE USER IF NOT EXISTS '$user'@'%' IDENTIFIED BY '${DB_PASSWORD}_$suffix';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$user'@'%';
+GRANT APPLICATION_PASSWORD_ADMIN ON *.* TO '$user'@'%';
+SQL
+    done
+    echo "MySQL ist bereit: jdbc:mysql://localhost:$PORT/$DB_NAME (User: $DB_USER, ${DB_USER}_a, ${DB_USER}_b)"
     exit 0
   fi
   echo -n "."
