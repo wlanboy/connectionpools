@@ -15,10 +15,11 @@
 # Aufruf: ./change-password.sh [neues-passwort]   (ohne Argument: zufällig)
 set -euo pipefail
 
+source "$(dirname "$0")/db.env"
+
 APP=pool
 NAMESPACE=pool
 SECRET=$APP-db
-DB_CONTAINER=mysql-pool
 TIMEOUT=180
 
 secret_value() {
@@ -36,7 +37,7 @@ fi
 
 # SQL als App-User mit dem übergebenen Passwort ausführen
 mysql_as() {
-  docker exec -i -e MYSQL_PWD="$1" "$DB_CONTAINER" mysql -h 127.0.0.1 -u"$DB_USER"
+  MYSQL_PWD="$1" mysql -h "$DB_HOST" -P "$DB_PORT" -u"$DB_USER"
 }
 
 can_login() {

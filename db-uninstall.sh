@@ -2,6 +2,8 @@
 # Entfernt den MySQL-Container aus db.sh samt Daten-Volume und dem
 # Kubernetes-Secret mit den DB-Zugangsdaten.
 #
+# Läuft auf dem DB-Host selbst (DB_HOST aus db.env).
+#
 # Aufruf: ./db-uninstall.sh [--keep-data]   (--keep-data: Volume und Secret behalten)
 set -euo pipefail
 
@@ -13,7 +15,7 @@ SECRET=pool-db
 KEEP_DATA=false
 [[ ${1:-} == --keep-data ]] && KEEP_DATA=true
 
-# Stoppen und löschen, trennt ihn auch vom kind-Netzwerk
+# Stoppen und löschen
 if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   echo "Entferne Container $CONTAINER_NAME ..."
   docker rm -f "$CONTAINER_NAME" >/dev/null

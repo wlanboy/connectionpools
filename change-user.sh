@@ -14,10 +14,11 @@
 # Aufruf: ./change-user.sh
 set -euo pipefail
 
+source "$(dirname "$0")/db.env"
+
 APP=pool
 NAMESPACE=pool
 SECRET=$APP-db
-DB_CONTAINER=mysql-pool
 TIMEOUT=180
 
 # User und Passwörter wie in db.sh
@@ -31,7 +32,7 @@ secret_value() {
 }
 
 can_login() {
-  docker exec -i -e MYSQL_PWD="$2" "$DB_CONTAINER" mysql -h 127.0.0.1 -u"$1" \
+  MYSQL_PWD="$2" mysql -h "$DB_HOST" -P "$DB_PORT" -u"$1" \
     <<<'SELECT 1' >/dev/null 2>&1
 }
 

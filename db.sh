@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Läuft auf dem DB-Host selbst (DB_HOST aus db.env).
+source "$(dirname "$0")/db.env"
+
 CONTAINER_NAME=mysql-pool
 IMAGE=mysql:9.7
 VOLUME=mysql-pool-data
@@ -8,7 +11,6 @@ DB_NAME=pool
 DB_USER=pool
 DB_PASSWORD=poolsecret
 ROOT_PASSWORD=rootsecret
-PORT=3306
 
 # Container läuft bereits
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
@@ -21,7 +23,7 @@ else
   echo "Erstelle Container $CONTAINER_NAME ($IMAGE) ..."
   docker run -d \
     --name "$CONTAINER_NAME" \
-    -p "$PORT":3306 \
+    -p "$DB_PORT":3306 \
     -e MYSQL_ROOT_PASSWORD="$ROOT_PASSWORD" \
     -e MYSQL_DATABASE="$DB_NAME" \
     -e MYSQL_USER="$DB_USER" \
@@ -51,7 +53,7 @@ GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$user'@'%';
 GRANT APPLICATION_PASSWORD_ADMIN ON *.* TO '$user'@'%';
 SQL
     done
-    echo "MySQL ist bereit: jdbc:mysql://localhost:$PORT/$DB_NAME (User: $DB_USER, ${DB_USER}_a, ${DB_USER}_b)"
+    echo "MySQL ist bereit: jdbc:mysql://$DB_HOST:$DB_PORT/$DB_NAME (User: $DB_USER, ${DB_USER}_a, ${DB_USER}_b)"
     exit 0
   fi
   echo -n "."
