@@ -11,13 +11,14 @@ import com.zaxxer.hikari.HikariCredentialsProvider;
 import com.zaxxer.hikari.util.Credentials;
 
 /**
- * Liefert Hikari bei jedem neuen Verbindungsaufbau das Passwort aus dem gemounteten
- * Kubernetes-Secret. kubelet aktualisiert die Datei im laufenden Pod, neue Verbindungen nutzen
- * also automatisch das rotierte Passwort. Bestehende Verbindungen laufen bis zu ihrer
+ * Liefert Hikari bei jedem neuen Verbindungsaufbau Username und Passwort aus dem gemounteten
+ * Kubernetes-Secret. kubelet aktualisiert die Dateien im laufenden Pod, neue Verbindungen nutzen
+ * also automatisch die rotierten Credentials. Bestehende Verbindungen laufen bis zu ihrer
  * {@code maxLifetime} weiter.
  * <p>
- * Voraussetzung: Die DB akzeptiert während der Umstellung altes und neues Passwort (MySQL
- * {@code RETAIN CURRENT PASSWORD}), und das Secret wird erst nach der DB geändert.
+ * Voraussetzung: Die DB akzeptiert die neuen Credentials, bevor das Secret geändert wird, und die
+ * alten bleiben gültig, bis alle Pods umgestellt sind. Das leisten sowohl MySQL Dual Password
+ * (change-password.sh) als auch zwei User im Wechsel (change-user.sh).
  */
 public class SecretFileCredentialsProvider implements HikariCredentialsProvider {
 
@@ -28,8 +29,8 @@ public class SecretFileCredentialsProvider implements HikariCredentialsProvider 
 	private volatile Credentials lastKnown;
 
 	/**
-	 * @param dir Verzeichnis des Secret-Volumes mit den Dateien {@code password} und
-	 * {@code version}
+	 * @param dir Verzeichnis des Secret-Volumes mit den Dateien {@code username},
+	 * {@code password} und {@code version}
 	 * @param initial Credentials aus der Konfiguration, falls die Datei nicht lesbar ist
 	 */
 	public SecretFileCredentialsProvider(Path dir, Credentials initial) {
@@ -40,16 +41,36 @@ public class SecretFileCredentialsProvider implements HikariCredentialsProvider 
 	@Override
 	public Credentials getCredentials() {
 		try {
-			String password = Files.readString(dir.resolve("password")).strip();
-			if (!password.equals(lastKnown.getPassword())) {
-				lastKnown = Credentials.of(lastKnown.getUsername(), password);
-				log.info("Neue Verbindungen nutzen DB-Passwort-Version {}", version());
+			Path data = snapshot();
+			String username = Files.readString(data.resolve("username")).strip();
+			String password = Files.readString(data.resolve("password")).strip();
+			if (!username.equals(lastKnown.getUsername()) || !password.equals(lastKnown.getPassword())) {
+				lastKnown = Credentials.of(username, password);
+				log.info("Neue Verbindungen nutzen DB-User {}, Secret-Version {}", username, version());
 			}
 		}
 		catch (IOException ex) {
 			log.warn("Secret in {} nicht lesbar, nutze letztes bekanntes Passwort: {}", dir, ex.getMessage());
 		}
 		return lastKnown;
+	}
+
+	/**
+	 * Verzeichnis eines konsistenten Secret-Stands. kubelet legt jeden Stand in einem eigenen
+	 * Verzeichnis ab und tauscht den Symlink {@code ..data} atomar. Wer Username und Passwort
+	 * nacheinander über die Symlinks im Volume liest, könnte sonst User A mit dem Passwort von
+	 * User B kombinieren. Ohne {@code ..data} (lokales Verzeichnis) wird direkt gelesen.
+	 */
+	private Path snapshot() throws IOException {
+		Path data = dir.resolve("..data");
+		return Files.exists(data) ? data.toRealPath() : dir;
+	}
+
+	/**
+	 * DB-User, mit dem der nächste Verbindungsaufbau arbeitet.
+	 */
+	public String username() {
+		return getCredentials().getUsername();
 	}
 
 	/**

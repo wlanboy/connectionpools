@@ -12,15 +12,15 @@ import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.HikariPoolMXBean;
 
 /**
- * {@code /actuator/dbcredentials}: Secret-Version, mit der neue Verbindungen aufgebaut werden,
- * und Pool-Zustand. change-password.sh wartet hierüber, bis kubelet das neue Secret in jeden Pod
- * geschrieben hat. Das Passwort selbst wird nie ausgegeben.
+ * {@code /actuator/dbcredentials}: Secret-Version und DB-User, mit denen neue Verbindungen
+ * aufgebaut werden, und Pool-Zustand. change-password.sh und change-user.sh warten hierüber, bis
+ * kubelet das neue Secret in jeden Pod geschrieben hat. Das Passwort selbst wird nie ausgegeben.
  */
 @Component
 @Endpoint(id = "dbcredentials")
 public class DbCredentialsEndpoint {
 
-	record Status(String version, int active, int idle, int total, int waiting) {
+	record Status(String version, String username, int active, int idle, int total, int waiting) {
 	}
 
 	private final HikariDataSource dataSource;
@@ -31,13 +31,17 @@ public class DbCredentialsEndpoint {
 
 	@ReadOperation
 	public Status status() {
-		String version = dataSource.getCredentialsProvider() instanceof SecretFileCredentialsProvider provider
-				? provider.version() : "none";
+		String version = "none";
+		String username = dataSource.getUsername();
+		if (dataSource.getCredentialsProvider() instanceof SecretFileCredentialsProvider provider) {
+			version = provider.version();
+			username = provider.username();
+		}
 		HikariPoolMXBean pool = dataSource.getHikariPoolMXBean();
 		if (pool == null) {
-			return new Status(version, 0, 0, 0, 0);
+			return new Status(version, username, 0, 0, 0, 0);
 		}
-		return new Status(version, pool.getActiveConnections(), pool.getIdleConnections(),
+		return new Status(version, username, pool.getActiveConnections(), pool.getIdleConnections(),
 				pool.getTotalConnections(), pool.getThreadsAwaitingConnection());
 	}
 
