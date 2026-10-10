@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Läuft auf dem DB-Host selbst (DB_HOST aus db.env).
-source "$(dirname "$0")/db.env"
+# Läuft auf dem DB-Host selbst (DB_HOST aus config.env).
+source "$(dirname "$0")/config.env"
 
 CONTAINER_NAME=mysql-pool
 IMAGE=mysql:9.7

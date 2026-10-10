@@ -1,8 +1,8 @@
-# Zeigt auf die MySQL außerhalb des Clusters (database.host, aus db.env).
+# Zeigt auf die MySQL außerhalb des Clusters (database.host, aus config.env).
 # Eine IP geht nicht als ExternalName, dafür Service ohne Selector + EndpointSlice.
 # Der Port-Name "tcp-mysql" sagt Istio, dass es reines TCP ist
 # (MySQL ist server-first, Protocol Sniffing würde hängen).
-{{- $host := required "database.host fehlt (db.env)" .Values.database.host }}
+{{- $host := required "database.host fehlt (config.env)" .Values.database.host }}
 {{- $isIP := regexMatch "^[0-9]+(\\.[0-9]+){3}$" $host }}
 apiVersion: v1
 kind: Service

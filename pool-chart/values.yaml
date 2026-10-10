@@ -17,7 +17,7 @@ istio:
     istio: ingressgateway
 
 database:
-  # IP oder Hostname der MySQL, setzt install.sh aus db.env
+  # IP oder Hostname der MySQL, setzt install.sh aus config.env
   host: ""
   port: 3306
   name: pool

@@ -14,7 +14,7 @@
 # Aufruf: ./change-user.sh
 set -euo pipefail
 
-source "$(dirname "$0")/db.env"
+source "$(dirname "$0")/config.env"
 
 APP=pool
 NAMESPACE=pool

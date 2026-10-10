@@ -2,7 +2,7 @@
 # Entfernt den MySQL-Container aus db.sh samt Daten-Volume und dem
 # Kubernetes-Secret mit den DB-Zugangsdaten.
 #
-# Läuft auf dem DB-Host selbst (DB_HOST aus db.env).
+# Läuft auf dem DB-Host selbst (DB_HOST aus config.env).
 #
 # Aufruf: ./db-uninstall.sh [--keep-data]   (--keep-data: Volume und Secret behalten)
 set -euo pipefail

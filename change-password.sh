@@ -15,7 +15,7 @@
 # Aufruf: ./change-password.sh [neues-passwort]   (ohne Argument: zufällig)
 set -euo pipefail
 
-source "$(dirname "$0")/db.env"
+source "$(dirname "$0")/config.env"
 
 APP=pool
 NAMESPACE=pool

@@ -2,11 +2,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")"
-source ./db.env
+source ./config.env
 
 APP=pool
 NAMESPACE=pool
-REGISTRY=localhost:5001
 TAG=${TAG:-$(date +%Y%m%d%H%M%S)}
 IMAGE=$REGISTRY/$APP
 
@@ -19,7 +18,7 @@ docker push "$IMAGE:latest"
 
 # 2. MySQL erreichbar?
 if ! timeout 3 bash -c "</dev/tcp/$DB_HOST/$DB_PORT" 2>/dev/null; then
-  echo "MySQL unter $DB_HOST:$DB_PORT nicht erreichbar (db.env prüfen)." >&2
+  echo "MySQL unter $DB_HOST:$DB_PORT nicht erreichbar (config.env prüfen)." >&2
   exit 1
 fi
 
