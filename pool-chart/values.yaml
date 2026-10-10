@@ -25,6 +25,21 @@ database:
   # nur Startwert beim ersten Install, danach change-password.sh
   password: poolsecret
 
+# HikariCP, wird als SPRING_DATASOURCE_HIKARI_<KEY> gesetzt.
+# Gleiche Werte wie in application.properties. Zeiten in Millisekunden.
+hikari:
+  poolName: pool
+  maximumPoolSize: 10
+  minimumIdle: 1
+  # Nach einem User- oder Passwortwechsel sind spätestens nach dieser Zeit
+  # alle Verbindungen mit den neuen Zugangsdaten aufgebaut (Default 30 min)
+  maxLifetime: 300000
+  keepaliveTime: 180000
+  idleTimeout: 180000
+  connectionTimeout: 30000
+  validationTimeout: 5000
+  leakDetectionThreshold: 0
+
 resources:
   requests:
     cpu: 200m

@@ -102,7 +102,7 @@ helm get values pool -n pool                # mit --set übergebene Werte, z. B.
 
 Env-Variablen aus einem Secret werden nur beim Containerstart gelesen. Deshalb ist das Secret zusätzlich als Volume gemountet (ohne `subPath`, sonst kommen keine Updates an). Ändert sich das Secret, schreibt kubelet die Dateien `password` und `version` im laufenden Pod neu.
 
-`SecretFileCredentialsInstaller` hängt beim Start einen `SecretFileCredentialsProvider` an die `HikariDataSource`, sofern `app.db-credentials.dir` gesetzt ist (im Chart über `APP_DBCREDENTIALS_DIR`). Hikari fragt den Provider bei jedem neuen Verbindungsaufbau, der Provider liest die Datei. Bestehende Verbindungen laufen bis zu ihrer `maxLifetime` weiter. Das ist unkritisch, weil MySQL das Passwort nur beim Login prüft.
+`SecretFileCredentialsInstaller` hängt beim Start einen `SecretFileCredentialsProvider` an die `HikariDataSource`, sofern `app.db-credentials.dir` gesetzt ist (im Chart über `APP_DBCREDENTIALS_DIR`). Hikari fragt den Provider bei jedem neuen Verbindungsaufbau, der Provider liest die Datei. Bestehende Verbindungen laufen bis zu ihrer `maxLifetime` weiter (5 min statt Hikari-Default 30 min). Das ist unkritisch, weil MySQL das Passwort nur beim Login prüft.
 
 Der Provider liest `username` und `password`. Beide Dateien kommen aus demselben Secret-Stand: kubelet legt jeden Stand in einem eigenen Verzeichnis ab und tauscht den Symlink `..data` atomar, der Provider löst diesen Symlink einmal auf und liest beide Dateien von dort. So kann er nicht den neuen User mit dem alten Passwort kombinieren.
 
@@ -113,6 +113,20 @@ Der Provider liest `username` und `password`. Beide Dateien kommen aus demselben
 ```
 
 `version` und `username` beschreiben den Stand, mit dem die nächste neue Verbindung aufgebaut wird. Das Passwort wird nie ausgegeben.
+
+### Hikari-Einstellungen
+
+Alle Pool-Werte stehen explizit in `application.properties` (lokaler Start) und unter `hikari` in `pool-chart/values.yaml`. Das Chart setzt jeden Eintrag als Env-Variable `SPRING_DATASOURCE_HIKARI_<KEY>`, z. B. `maxLifetime` als `SPRING_DATASOURCE_HIKARI_MAXLIFETIME`. Änderungen also an beiden Stellen nachziehen.
+
+| Einstellung | Wert | Bedeutung |
+|---|---|---|
+| `maximumPoolSize` / `minimumIdle` | 10 / 1 | bis zu 10 Verbindungen, im Leerlauf mindestens 1 |
+| `maxLifetime` | 5 min | danach wird eine Verbindung ersetzt, mit den aktuellen Zugangsdaten |
+| `keepaliveTime` | 3 min | Ping auf ungenutzte Verbindungen, muss kleiner als `maxLifetime` sein |
+| `idleTimeout` | 3 min | ungenutzte Verbindungen über `minimumIdle` hinaus werden danach geschlossen, muss kleiner als `maxLifetime` sein |
+| `connectionTimeout` | 30 s | so lange wartet ein Request auf eine freie Verbindung |
+| `validationTimeout` | 5 s | Timeout für den Verbindungstest |
+| `leakDetectionThreshold` | 0 | Leak-Erkennung aus |
 
 ## 5. change-password.sh
 
@@ -183,7 +197,7 @@ Statt das Passwort eines Users zu ändern, schaltet die Anwendung auf einen ande
 | 2 | `username`, `password` und `version` gemeinsam im Secret patchen, Pods annotieren |
 | 3 | warten, bis jeder Pod die neue `version` und den neuen `username` meldet, `pending-*` entfernen |
 
-Neue Verbindungen nutzen den neuen User, sobald kubelet das Secret in den Pod geschrieben hat. Offene Verbindungen des alten Users laufen bis zu ihrer `maxLifetime` weiter. Beide User bleiben gültig, deshalb geht dabei kein Request verloren.
+Neue Verbindungen nutzen den neuen User, sobald kubelet das Secret in den Pod geschrieben hat. Offene Verbindungen des alten Users laufen bis zu ihrer `maxLifetime` weiter, also bis zu 5 min nach Skriptende. Beide User bleiben gültig, deshalb geht dabei kein Request verloren. Einen alten User erst danach sperren oder löschen.
 
 Bricht das Skript ab, setzt ein erneuter Lauf den Wechsel auf denselben User fort, statt zurückzuschalten. `change-password.sh` und `change-user.sh` erkennen gegenseitig eine unterbrochene Rotation und brechen dann ab.
 
