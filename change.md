@@ -30,7 +30,7 @@ Bricht das Skript vor Schritt 4 ab, bleiben beide Passwörter gültig. Ein erneu
 - **MySQL ab 8.0.14** für `RETAIN CURRENT PASSWORD` / `DISCARD OLD PASSWORD`. Andere Datenbanken haben kein Dual Password, dafür gibt es [switch.md](switch.md).
 - **Spring Boot Actuator**, damit das Skript den Stand je Pod abfragen kann.
 - **`curl` im Container-Image.** Das Skript ruft den Endpoint per `kubectl exec ... curl` auf. Fehlt `curl`, die Abfrage auf `wget` oder `kubectl port-forward` umstellen.
-- **Rechte für den, der das Skript ausführt:** Secret lesen und patchen, Pods auflisten, annotieren und `exec`.
+- **Rechte für das Skript.** Wer es ausführt, muss das Secret lesen und patchen sowie Pods auflisten, annotieren und `exec` ausführen dürfen.
 
 ## Schritt 1: Klassen übernehmen
 
@@ -42,7 +42,7 @@ Die drei Klassen aus [src/main/java/com/example/pool/credentials/](src/main/java
 | `SecretFileCredentialsInstaller` | `BeanPostProcessor`, hängt den Provider an jede `HikariDataSource`, wenn `app.db-credentials.dir` gesetzt ist |
 | `DbCredentialsEndpoint` | Actuator-Endpoint `dbcredentials` mit `version`, `username` und Pool-Zahlen, ohne Passwort |
 
-Der Provider liest bei **jedem neuen Verbindungsaufbau** die Dateien:
+Der Provider liest die Dateien bei jedem neuen Verbindungsaufbau:
 
 ```java
 public Credentials getCredentials() {
@@ -65,9 +65,9 @@ public Credentials getCredentials() {
 
 Worauf man in einer bestehenden Anwendung achten muss:
 
-- **Eigene DataSource-Bean.** Der Installer greift nur bei Beans vom Typ `HikariDataSource`. Wird die DataSource gewrappt (z. B. für Tracing oder Routing), bevor sie als Bean registriert ist, sieht der Installer sie nicht. Dann den Provider direkt dort setzen, wo die `HikariDataSource` gebaut wird.
+- **Eigene DataSource-Bean.** Der Installer greift nur bei Beans vom Typ `HikariDataSource`. Wrappt die Anwendung die DataSource für Tracing oder Routing, bevor sie als Bean registriert ist, sieht der Installer sie nicht. Dann den Provider direkt dort setzen, wo die `HikariDataSource` gebaut wird.
 - **Mehrere DataSources.** Der Installer hängt denselben Provider-Typ mit demselben Verzeichnis an jede `HikariDataSource`. Bei mehreren Datenbanken mit unterschiedlichen Zugangsdaten muss der Installer pro Bean ein eigenes Verzeichnis bekommen.
-- **Zeitpunkt.** Der Provider muss gesetzt sein, bevor der Pool startet, danach ist die Hikari-Konfiguration versiegelt. Ein `BeanPostProcessor` erfüllt das, solange nichts in der Anwendung schon während der Bean-Initialisierung der DataSource eine Verbindung holt.
+- **Zeitpunkt.** Der Provider muss gesetzt sein, bevor der Pool startet. Danach versiegelt Hikari die Konfiguration. Ein `BeanPostProcessor` erfüllt das, solange nichts in der Anwendung schon während der Bean-Initialisierung der DataSource eine Verbindung holt.
 - **Startwert.** Initial übernimmt der Provider `spring.datasource.username` und `spring.datasource.password`. Sie bleiben als Fallback nötig, falls die Datei beim Start nicht lesbar ist.
 
 ## Schritt 2: Konfiguration
@@ -85,7 +85,7 @@ spring.datasource.hikari.keepalive-time=180000
 spring.datasource.hikari.idle-timeout=180000
 ```
 
-`max-lifetime` bestimmt, wie lange Verbindungen mit dem alten Passwort noch offen sind. Der Hikari-Default sind 30 Minuten, hier 5 Minuten. `keepalive-time` und `idle-timeout` müssen kleiner sein als `max-lifetime`. Wenn der Endpoint öffentlich erreichbar wäre, die Exposure auf den Management-Port beschränken (`management.server.port`).
+`max-lifetime` bestimmt, wie lange Verbindungen mit dem alten Passwort noch offen sind. Der Hikari-Default sind 30 Minuten, hier 5 Minuten. `keepalive-time` und `idle-timeout` müssen kleiner sein als `max-lifetime`. Ist der Endpoint öffentlich erreichbar, die Exposure mit `management.server.port` auf den Management-Port beschränken.
 
 ## Schritt 3: Datenbank
 
@@ -133,7 +133,7 @@ stringData:
 
 ### Deployment
 
-Das Secret zusätzlich als Volume mounten. Env-Variablen werden nur beim Containerstart gelesen, Dateien in einem Secret-Volume aktualisiert kubelet im laufenden Pod ([pool-chart/templates/deployment.yaml](pool-chart/templates/deployment.yaml)):
+Das Secret zusätzlich als Volume mounten. Env-Variablen liest der Container nur beim Start. Dateien in einem Secret-Volume aktualisiert kubelet dagegen im laufenden Pod ([pool-chart/templates/deployment.yaml](pool-chart/templates/deployment.yaml)):
 
 ```yaml
 spec:
@@ -160,7 +160,7 @@ spec:
           readOnly: true
 ```
 
-Der Pod-Label `app: <name>` wird vom Skript als Selector genutzt.
+Das Skript wählt die Pods über das Label `app: <name>` aus.
 
 ## Schritt 5: Rotationsskript anpassen
 
@@ -186,9 +186,9 @@ Was das Skript absichert:
 - **Reihenfolge.** Erst MySQL, dann Secret. Der Provider testet ein neues Passwort nicht vorab. Stünde im Secret ein Passwort, das MySQL noch nicht kennt, schlügen neue Verbindungen fehl. Das Secret deshalb nie von Hand ändern.
 - **Fortsetzen nach Abbruch.** Das neue Passwort liegt vorab als `pending-password` / `pending-version` im Secret. Ein erneuter Lauf nimmt dasselbe Passwort. Ein zweites `RETAIN CURRENT PASSWORD` mit einem anderen Passwort würde sonst das ursprüngliche verwerfen, mit dem die Pods eventuell noch arbeiten.
 - **Passwort nicht in der Prozessliste.** Der Secret-Patch geht über stdin (`--patch-file /dev/stdin`), das MySQL-Passwort über `MYSQL_PWD`.
-- **Schneller Volume-Sync.** kubelet gleicht Secret-Volumes nur periodisch ab (bis zu 1–2 Minuten). Eine Annotation am Pod löst den Abgleich sofort aus.
-- **Startende Pods.** Erfasst werden alle Pods außer `Succeeded`/`Failed`. Pods, die währenddessen verschwinden, werden übersprungen.
-- **SQL-Escaping.** `\` und `'` im Passwort werden escaped.
+- **Schneller Volume-Sync.** kubelet gleicht Secret-Volumes nur periodisch ab (bis zu 1 bis 2 Minuten). Eine Annotation am Pod löst den Abgleich sofort aus.
+- **Startende Pods.** Das Skript erfasst alle Pods außer `Succeeded`/`Failed`. Pods, die währenddessen verschwinden, überspringt es.
+- **SQL-Escaping.** Das Skript escaped `\` und `'` im Passwort.
 
 ## Schritt 6: Testen
 
@@ -197,7 +197,7 @@ Was das Skript absichert:
    kubectl exec <pod> -c <container> -- curl -s localhost:8080/actuator/dbcredentials
    # { "version": "initial", "username": "pool", "active": 0, "idle": 1, "total": 1, "waiting": 0 }
    ```
-   `version` muss `initial` sein, nicht `none`. `none` heißt: Der Provider ist nicht aktiv, meist fehlt `app.db-credentials.dir`.
+   `version` muss `initial` sein, nicht `none`. Bei `none` ist der Provider nicht aktiv, meist fehlt dann `app.db-credentials.dir`.
 2. Dauerlast starten (im Projekt `./test.sh`).
 3. `./change-password.sh` ausführen. Die Last darf keine Fehler zeigen.
 4. Im Log jedes Pods erscheint `Neue Verbindungen nutzen DB-User ..., Secret-Version ...`.
@@ -217,7 +217,7 @@ Was das Skript absichert:
 
 ## Einschränkungen
 
-- Offene Verbindungen werden nicht aktiv getauscht, sondern laufen bis `max-lifetime` weiter. MySQL prüft das Passwort nur beim Login, offene Sessions überleben `DISCARD OLD PASSWORD`. Muss ein kompromittiertes Passwort sofort aus allen Verbindungen verschwinden, zusätzlich `HikariPoolMXBean.softEvictConnections()` aufrufen oder die Pods neu starten.
+- Hikari tauscht offene Verbindungen nicht aktiv aus, sie laufen bis `max-lifetime` weiter. MySQL prüft das Passwort nur beim Login, offene Sessions überleben `DISCARD OLD PASSWORD`. Muss ein kompromittiertes Passwort sofort aus allen Verbindungen verschwinden, zusätzlich `HikariPoolMXBean.softEvictConnections()` aufrufen oder die Pods neu starten.
 - Die Env-Variable mit dem Passwort ist nach einer Rotation veraltet. Sie dient nur noch als Fallback, wenn die Datei nicht lesbar ist.
 - `change-password.sh` und `change-user.sh` erkennen gegenseitig eine unterbrochene Rotation (`pending-*`-Schlüssel) und brechen dann ab. Erst die unterbrochene Rotation abschließen.
 - Ein `helm upgrade` während einer unterbrochenen Rotation übernimmt die `pending-*`-Schlüssel per `lookup`. Das ist gewollt, der nächste Lauf setzt fort.

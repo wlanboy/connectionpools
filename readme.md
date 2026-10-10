@@ -1,8 +1,8 @@
 # connectionpools
 
-Demo für eine Rotation des Datenbank-Passworts ohne Downtime. Eine Spring-Boot-Anwendung (Java 25, HikariCP 7) läuft in einem lokalen kind-Cluster mit Istio und spricht mit einer MySQL, die als Docker-Container außerhalb des Clusters läuft. Das Passwort des DB-Users `pool` lässt sich im laufenden Betrieb wechseln: Kein Pod wird neu gestartet, kein Request schlägt fehl.
+Demo für eine Rotation des Datenbank-Passworts ohne Downtime. Eine Spring-Boot-Anwendung (Java 25, HikariCP 7) läuft in einem lokalen kind-Cluster mit Istio und spricht mit einer MySQL, die als Docker-Container außerhalb des Clusters läuft. Das Passwort des DB-Users `pool` lässt sich im laufenden Betrieb wechseln, ohne dass ein Pod neu startet oder ein Request fehlschlägt.
 
-Die Anwendung selbst ist eine kleine Nachrichtenliste (`/api/messages`, Web-UI unter `http://pool.localhost/`). Sie existiert vor allem, damit es Traffic über den Connection-Pool gibt, den man während der Rotation beobachten kann.
+Die Anwendung selbst ist eine kleine Nachrichtenliste (`/api/messages`, Web-UI unter `http://pool.localhost/`). Sie ist nur dafür da, Traffic über den Connection-Pool zu erzeugen, den man während der Rotation beobachten kann.
 
 ## Bausteine
 
@@ -38,7 +38,7 @@ Startet MySQL 9.7 als Docker-Container `mysql-pool` auf Port 3306 mit Volume `my
 - Container existiert, ist aber gestoppt: `docker start`.
 - Container fehlt: `docker run` mit DB `pool`, User `pool` / `poolsecret`, root / `rootsecret`.
 
-Danach wartet es bis zu 120 Sekunden, bis MySQL per TCP (`-h 127.0.0.1`) antwortet. TCP ist wichtig, weil der temporäre Init-Server beim ersten Start nur über den Socket erreichbar ist und sonst fälschlich als bereit gälte. Der Check läuft als root, nicht als `pool`, denn nach einer Rotation stimmt `poolsecret` nicht mehr.
+Danach wartet es bis zu 120 Sekunden, bis MySQL per TCP (`-h 127.0.0.1`) antwortet. Der Check muss über TCP laufen. Beim ersten Start ist der temporäre Init-Server nur über den Socket erreichbar und gälte sonst fälschlich als bereit. Der Check läuft als root, nicht als `pool`, denn nach einer Rotation stimmt `poolsecret` nicht mehr.
 
 Sobald MySQL bereit ist, vergibt das Skript bei jedem Lauf:
 
@@ -78,7 +78,7 @@ Das Chart `pool-chart/` erzeugt:
 | `service.yaml` | Service `pool` auf Port 8080 |
 | `gateway.yaml`, `virtualservice.yaml` | Istio-Routing von `pool.localhost` auf den Service |
 
-Besonderheit in `secret.yaml`: Per `lookup` liest Helm das vorhandene Secret aus dem Cluster und übernimmt dessen Daten. Nur beim ersten Install kommt das Passwort aus `values.yaml` (`database.password`, Version `initial`). Ein späteres `helm upgrade` setzt ein rotiertes Passwort deshalb nicht auf `poolsecret` zurück.
+In `secret.yaml` liest Helm per `lookup` das vorhandene Secret aus dem Cluster und übernimmt dessen Daten. Nur beim ersten Install kommt das Passwort aus `values.yaml` (`database.password`, Version `initial`). Ein späteres `helm upgrade` setzt ein rotiertes Passwort deshalb nicht auf `poolsecret` zurück.
 
 ## 3. helm status
 
@@ -86,7 +86,7 @@ Besonderheit in `secret.yaml`: Per `lookup` liest Helm das vorhandene Secret aus
 helm status pool -n pool
 ```
 
-Zeigt den Zustand des Releases: Namespace, `STATUS` (`deployed`, `failed`, `pending-upgrade` …), die Revisionsnummer und den Zeitpunkt des letzten Deployments. Jeder `helm upgrade --install`-Lauf erhöht die Revision um eins.
+Zeigt Namespace, `STATUS` (`deployed`, `failed`, `pending-upgrade` …), die Revisionsnummer und den Zeitpunkt des letzten Deployments. Jeder `helm upgrade --install`-Lauf erhöht die Revision um eins.
 
 Nützliche Varianten:
 
@@ -100,11 +100,11 @@ helm get values pool -n pool                # mit --set übergebene Werte, z. B.
 
 ## 4. Wie die Anwendung das Passwort wechselt
 
-Env-Variablen aus einem Secret werden nur beim Containerstart gelesen. Deshalb ist das Secret zusätzlich als Volume gemountet (ohne `subPath`, sonst kommen keine Updates an). Ändert sich das Secret, schreibt kubelet die Dateien `password` und `version` im laufenden Pod neu.
+Env-Variablen aus einem Secret liest der Container nur beim Start. Deshalb ist das Secret zusätzlich als Volume gemountet, und zwar ohne `subPath`, sonst kommen keine Updates an. Ändert sich das Secret, schreibt kubelet die Dateien `password` und `version` im laufenden Pod neu.
 
-`SecretFileCredentialsInstaller` hängt beim Start einen `SecretFileCredentialsProvider` an die `HikariDataSource`, sofern `app.db-credentials.dir` gesetzt ist (im Chart über `APP_DBCREDENTIALS_DIR`). Hikari fragt den Provider bei jedem neuen Verbindungsaufbau, der Provider liest die Datei. Bestehende Verbindungen laufen bis zu ihrer `maxLifetime` weiter (5 min statt Hikari-Default 30 min). Das ist unkritisch, weil MySQL das Passwort nur beim Login prüft.
+`SecretFileCredentialsInstaller` hängt beim Start einen `SecretFileCredentialsProvider` an die `HikariDataSource`, sofern `app.db-credentials.dir` gesetzt ist (im Chart über `APP_DBCREDENTIALS_DIR`). Hikari fragt den Provider bei jedem neuen Verbindungsaufbau, der Provider liest die Datei. Bestehende Verbindungen laufen bis zu ihrer `maxLifetime` weiter, hier 5 min statt der 30 min aus dem Hikari-Default. Das stört nicht, weil MySQL das Passwort nur beim Login prüft.
 
-Der Provider liest `username` und `password`. Beide Dateien kommen aus demselben Secret-Stand: kubelet legt jeden Stand in einem eigenen Verzeichnis ab und tauscht den Symlink `..data` atomar, der Provider löst diesen Symlink einmal auf und liest beide Dateien von dort. So kann er nicht den neuen User mit dem alten Passwort kombinieren.
+Der Provider liest `username` und `password`. Beide Dateien kommen aus demselben Secret-Stand. kubelet legt jeden Stand in einem eigenen Verzeichnis ab und tauscht den Symlink `..data` atomar. Der Provider löst diesen Symlink einmal auf und liest beide Dateien von dort. So kann er nicht den neuen User mit dem alten Passwort kombinieren.
 
 `/actuator/dbcredentials` liefert je Pod:
 
@@ -112,7 +112,7 @@ Der Provider liest `username` und `password`. Beide Dateien kommen aus demselben
 { "version": "20261008184500", "username": "pool_a", "active": 1, "idle": 9, "total": 10, "waiting": 0 }
 ```
 
-`version` und `username` beschreiben den Stand, mit dem die nächste neue Verbindung aufgebaut wird. Das Passwort wird nie ausgegeben.
+`version` und `username` beschreiben den Stand, mit dem Hikari die nächste neue Verbindung aufbaut. Das Passwort gibt der Endpoint nie aus.
 
 ### Hikari-Einstellungen
 
@@ -121,9 +121,9 @@ Alle Pool-Werte stehen explizit in `application.properties` (lokaler Start) und 
 | Einstellung | Wert | Bedeutung |
 |---|---|---|
 | `maximumPoolSize` / `minimumIdle` | 10 / 1 | bis zu 10 Verbindungen, im Leerlauf mindestens 1 |
-| `maxLifetime` | 5 min | danach wird eine Verbindung ersetzt, mit den aktuellen Zugangsdaten |
+| `maxLifetime` | 5 min | danach ersetzt Hikari eine Verbindung durch eine neue mit den aktuellen Zugangsdaten |
 | `keepaliveTime` | 3 min | Ping auf ungenutzte Verbindungen, muss kleiner als `maxLifetime` sein |
-| `idleTimeout` | 3 min | ungenutzte Verbindungen über `minimumIdle` hinaus werden danach geschlossen, muss kleiner als `maxLifetime` sein |
+| `idleTimeout` | 3 min | danach schließt Hikari ungenutzte Verbindungen über `minimumIdle` hinaus, muss kleiner als `maxLifetime` sein |
 | `connectionTimeout` | 30 s | so lange wartet ein Request auf eine freie Verbindung |
 | `validationTimeout` | 5 s | Timeout für den Verbindungstest |
 | `leakDetectionThreshold` | 0 | Leak-Erkennung aus |
@@ -147,17 +147,17 @@ Das neue Passwort und eine Version (Zeitstempel) landen zuerst als `pending-pass
 ALTER USER USER() IDENTIFIED BY '<neu>' RETAIN CURRENT PASSWORD;
 ```
 
-Klappt der Login mit dem neuen Passwort schon, wird der Schritt übersprungen. Klappt weder neu noch alt, bricht das Skript ab.
+Klappt der Login mit dem neuen Passwort schon, überspringt das Skript den Schritt. Klappt weder neu noch alt, bricht das Skript ab.
 
 ### Schritt 2: Secret patchen, Pods anstoßen
 
-`password` und `version` im Secret werden auf den neuen Stand gesetzt. Der Patch läuft über stdin (`--patch-file /dev/stdin`), damit das Passwort nicht in der Prozessliste auftaucht.
+Das Skript setzt `password` und `version` im Secret auf den neuen Stand. Der Patch läuft über stdin (`--patch-file /dev/stdin`), damit das Passwort nicht in der Prozessliste auftaucht.
 
-kubelet gleicht Secret-Volumes nur periodisch ab (bis zu 1–2 Minuten). Eine Annotation `db-credentials/version=<VERSION>` an jedem Pod löst den Abgleich sofort aus. Erfasst werden alle Pods außer `Succeeded`/`Failed`, also auch solche, die gerade starten.
+kubelet gleicht Secret-Volumes nur periodisch ab (bis zu 1 bis 2 Minuten). Eine Annotation `db-credentials/version=<VERSION>` an jedem Pod löst den Abgleich sofort aus. Das Skript erfasst alle Pods außer `Succeeded`/`Failed`, also auch solche, die gerade starten.
 
 ### Schritt 3: Auf jeden Pod warten
 
-Für jeden Pod ruft das Skript per `kubectl exec` `curl localhost:8080/actuator/dbcredentials` auf, bis `version` der neuen Version entspricht. Ausgabe pro Pod: Pool-Zahlen (`active`, `idle`, `total`, `waiting`). Pods, die währenddessen verschwinden, werden übersprungen. Nach 180 Sekunden ohne Erfolg bricht das Skript ab, beide Passwörter bleiben gültig.
+Für jeden Pod ruft das Skript per `kubectl exec` `curl localhost:8080/actuator/dbcredentials` auf, bis `version` der neuen Version entspricht. Pro Pod gibt es die Pool-Zahlen `active`, `idle`, `total` und `waiting` aus. Pods, die währenddessen verschwinden, überspringt es. Nach 180 Sekunden ohne Erfolg bricht das Skript ab, beide Passwörter bleiben gültig.
 
 ### Schritt 4: Altes Passwort verwerfen
 
@@ -169,7 +169,7 @@ Dafür meldet sich das Skript mit dem neuen Passwort an. Danach entfernt es `pen
 
 ### Reihenfolge
 
-Die Reihenfolge ist entscheidend: erst MySQL, dann Secret, dann warten, dann verwerfen. Würde das Secret vor MySQL geändert, bekämen neue Verbindungen ein Passwort, das MySQL noch nicht kennt. Das Secret deshalb nie von Hand ändern.
+Erst MySQL, dann Secret, dann warten, dann verwerfen. Diese Reihenfolge darf sich nicht ändern. Würde das Secret vor MySQL geändert, bekämen neue Verbindungen ein Passwort, das MySQL noch nicht kennt. Das Secret deshalb nie von Hand ändern.
 
 ```
           MySQL akzeptiert      Secret / Pods           neue Verbindungen
@@ -180,7 +180,7 @@ Schritt 3 alt + neu             neu, bestätigt          neu
 Schritt 4 neu                   neu                     neu
 ```
 
-Details und Einschränkungen: [change.md](change.md).
+Details und Einschränkungen stehen in [change.md](change.md).
 
 ## 6. change-user.sh: zwei User im Wechsel
 
@@ -188,7 +188,7 @@ Details und Einschränkungen: [change.md](change.md).
 ./change-user.sh
 ```
 
-Statt das Passwort eines Users zu ändern, schaltet die Anwendung auf einen anderen User um. `pool_a` und `pool_b` existieren dauerhaft mit festen Passwörtern, in der Datenbank ändert sich beim Wechsel nichts, root ist nicht nötig. Das Verfahren braucht kein Dual Password und funktioniert deshalb auch mit PostgreSQL, Oracle oder SQL Server. Beim ersten Lauf ist der aktive User noch `pool`, das Skript wechselt dann auf `pool_a`, danach immer zwischen `pool_a` und `pool_b`.
+Statt das Passwort eines Users zu ändern, schaltet die Anwendung auf einen anderen User um. `pool_a` und `pool_b` existieren dauerhaft mit festen Passwörtern. In der Datenbank ändert sich beim Wechsel nichts, root ist nicht nötig. Das Verfahren braucht kein Dual Password und funktioniert deshalb auch mit PostgreSQL, Oracle oder SQL Server. Beim ersten Lauf ist der aktive User noch `pool`, das Skript wechselt dann auf `pool_a`, danach immer zwischen `pool_a` und `pool_b`.
 
 | Schritt | Aktion |
 |---------|--------|
@@ -205,9 +205,9 @@ Worauf man beim A/B-Wechsel achten muss:
 
 - Beide User brauchen dieselben Rechte. Neue Grants immer an beide vergeben (in `db.sh`).
 - In MySQL gehören Tabellen der Datenbank, nicht dem User. In PostgreSQL gehören sie dem User, der sie anlegt. Dort sollten beide User Mitglied einer gemeinsamen Owner-Rolle sein, sonst kann `pool_b` keine Tabellen von `pool_a` ändern.
-- Die Passwörter stehen in `db.sh` und `change-user.sh`. Ändert man sie an einer Stelle, muss die andere mitgezogen werden.
+- Die Passwörter stehen in `db.sh` und `change-user.sh`. Wer sie an einer Stelle ändert, muss die andere nachziehen.
 
-Einbau in eine bestehende Anwendung: [switch.md](switch.md).
+Wie man das in eine bestehende Anwendung einbaut, steht in [switch.md](switch.md).
 
 ## Testen
 

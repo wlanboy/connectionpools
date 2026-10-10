@@ -13,7 +13,7 @@ Statt das Passwort eines Users zu ändern, schaltet die Anwendung auf einen zwei
 | Aufwand für neue Grants | einmal | für beide User |
 | Ablösen eines kompromittierten Passworts | direkt | anderen User aktivieren, danach den alten sperren |
 
-Die Anwendungsseite ist bei beiden Methoden identisch. Wer [change.md](change.md) schon umgesetzt hat, muss nur Datenbank, Secret und Skript ergänzen.
+Der Code in der Anwendung ist bei beiden Methoden derselbe. Wer [change.md](change.md) schon umgesetzt hat, muss nur Datenbank, Secret und Skript ergänzen.
 
 ## Ablauf
 
@@ -38,16 +38,16 @@ Schritt 3 pool_a + pool_b       pool_b, bestätigt       pool_b
 
 ## Voraussetzungen
 
-Wie in [change.md](change.md#voraussetzungen): HikariCP ab 6.x, Actuator, `curl` im Image, Rechte für Secret und Pods. Dual Password ist nicht nötig.
+Dieselben wie in [change.md](change.md#voraussetzungen), also HikariCP ab 6.x, Actuator, `curl` im Image und Rechte für Secret und Pods. Dual Password ist nicht nötig.
 
 ## Schritt 1: Anwendung
 
-Identisch zu [change.md, Schritt 1 und 2](change.md#schritt-1-klassen-übernehmen): die drei Klassen aus [src/main/java/com/example/pool/credentials/](src/main/java/com/example/pool/credentials/) übernehmen, `app.db-credentials.dir` setzen, Endpoint `dbcredentials` freigeben, `max-lifetime` wählen.
+Wie in [change.md, Schritt 1 und 2](change.md#schritt-1-klassen-übernehmen) die drei Klassen aus [src/main/java/com/example/pool/credentials/](src/main/java/com/example/pool/credentials/) übernehmen, `app.db-credentials.dir` setzen, Endpoint `dbcredentials` freigeben, `max-lifetime` wählen.
 
-Für den User-Wechsel sind drei Details der Klassen wichtig:
+Für den User-Wechsel zählen drei Details der Klassen:
 
-- `SecretFileCredentialsProvider` liest `username` **und** `password` aus dem Secret, nicht nur das Passwort. Wer eine ältere Variante ohne Username übernommen hat, muss sie aktualisieren.
-- Beide Dateien werden über den aufgelösten `..data`-Symlink gelesen. Ohne diesen Schritt könnte der Provider zwischen den zwei Lesevorgängen den neuen User mit dem alten Passwort kombinieren.
+- `SecretFileCredentialsProvider` liest `username` und `password` aus dem Secret, nicht nur das Passwort. Wer eine ältere Variante ohne Username übernommen hat, muss sie aktualisieren.
+- Der Provider liest beide Dateien über den aufgelösten `..data`-Symlink. Ohne diesen Schritt könnte der Provider zwischen den zwei Lesevorgängen den neuen User mit dem alten Passwort kombinieren.
 - `DbCredentialsEndpoint` liefert `username` mit, darauf wartet das Skript:
   ```json
   { "version": "20261010091500", "username": "pool_b", "active": 1, "idle": 9, "total": 10, "waiting": 0 }
@@ -68,7 +68,7 @@ GRANT ALL PRIVILEGES ON `pool`.* TO 'pool_b'@'%';
 
 Worauf man achten muss:
 
-- **Gleiche Rechte.** Jeder neue Grant muss an beide User gehen. Fehlt einer bei `pool_b`, fällt das erst nach dem nächsten Wechsel auf. Am besten beide User einer gemeinsamen Rolle zuordnen und Grants nur an die Rolle vergeben.
+- **Gleiche Rechte.** Jeder neue Grant muss an beide User gehen. Fehlt einer bei `pool_b`, merkt man das erst nach dem nächsten Wechsel. Ich würde beide User einer gemeinsamen Rolle zuordnen und Grants nur an die Rolle vergeben.
 - **Objekt-Eigentümer.** In MySQL gehören Tabellen der Datenbank, nicht dem User. In PostgreSQL gehören sie dem User, der sie anlegt. Dort beide User Mitglied einer gemeinsamen Owner-Rolle machen und Migrationen (Flyway, Liquibase) mit `SET ROLE` auf diese Rolle laufen lassen. Sonst kann `pool_b` keine Tabellen ändern, die `pool_a` angelegt hat.
 - **Verbindungslimits.** Während des Wechsels halten beide User Verbindungen. Ein Limit pro User (`MAX_USER_CONNECTIONS`) muss für die volle Poolgröße aller Pods reichen.
 - **Auditing.** DB-Logs zeigen je nach Phase `pool_a` oder `pool_b`. Auswertungen, die nach Username filtern, auf beide anpassen.
@@ -105,12 +105,12 @@ Was das Skript absichert:
 - **Login vorab prüfen.** Kann sich der Ziel-User nicht anmelden, bricht das Skript ab, bevor das Secret geändert wird.
 - **Atomarer Secret-Patch.** `username`, `password` und `version` gehen in einem Patch ins Secret. kubelet schreibt sie als einen Stand ins Volume.
 - **Fortsetzen nach Abbruch.** Der Ziel-User liegt vorab als `pending-username` / `pending-version` im Secret. Ein erneuter Lauf setzt den Wechsel auf denselben User fort, statt zurückzuschalten.
-- **Warten auf beide Werte.** Ein Pod gilt erst als umgestellt, wenn er neue `version` **und** neuen `username` meldet.
+- **Warten auf beide Werte.** Ein Pod gilt erst als umgestellt, wenn er neue `version` und neuen `username` meldet.
 - **Gegenseitiger Schutz.** Läuft gerade eine unterbrochene Passwortrotation (`pending-password`), bricht `change-user.sh` ab, und umgekehrt.
 
 ## Passwörter rotieren mit zwei Usern
 
-`change-user.sh` wechselt nur den aktiven User, die Passwörter bleiben fest. Für eine echte Rotation ohne Dual Password das Passwort des **inaktiven** Users ändern und dann auf ihn wechseln:
+`change-user.sh` wechselt nur den aktiven User, die Passwörter bleiben fest. Für eine echte Rotation ohne Dual Password das Passwort des inaktiven Users ändern und dann auf ihn wechseln:
 
 ```
 1. ./change-user.sh                                aktiv: pool_b, inaktiv: pool_a
@@ -120,7 +120,7 @@ Was das Skript absichert:
 5. ./change-user.sh                                aktiv: pool_a mit neuem Passwort
 ```
 
-Schritt 2 ist wichtig: Erst wenn kein Pod mehr mit `pool_a` verbindet, darf sich dessen Passwort ändern. Offene Sessions überleben eine Passwortänderung zwar, aber ein Pod, der in diesem Moment eine neue Verbindung mit `pool_a` aufbaut, bekäme einen Login-Fehler. Diese Schritte sind im Skript noch nicht umgesetzt.
+Schritt 2 darf nicht fehlen. Das Passwort von `pool_a` darf sich erst ändern, wenn kein Pod mehr mit `pool_a` verbindet. Offene Sessions überleben eine Passwortänderung. Baut ein Pod aber genau dann eine neue Verbindung mit `pool_a` auf, bekommt er einen Login-Fehler. Das Skript automatisiert diese Schritte noch nicht.
 
 ## Testen
 
@@ -146,5 +146,5 @@ Schritt 2 ist wichtig: Erst wenn kein Pod mehr mit `pool_a` verbindet, darf sich
 ## Einschränkungen
 
 - Offene Verbindungen des alten Users laufen bis `max-lifetime` weiter. Soll der alte User sofort raus, zusätzlich `HikariPoolMXBean.softEvictConnections()` aufrufen oder die Pods neu starten.
-- Zwei User verdoppeln den Pflegeaufwand für Grants. Abweichende Rechte fallen erst nach dem Wechsel auf.
+- Zwei User verdoppeln den Pflegeaufwand für Grants. Abweichende Rechte merkt man erst nach dem Wechsel.
 - Die Env-Variablen `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD` zeigen nach einem Wechsel den Stand beim Pod-Start. Sie dienen nur als Fallback.
