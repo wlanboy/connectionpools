@@ -4,6 +4,73 @@ Demo für eine Rotation des Datenbank-Passworts ohne Downtime. Eine Spring-Boot-
 
 Die Anwendung selbst ist eine kleine Nachrichtenliste (`/api/messages`, Web-UI unter `http://pool.localhost/`). Sie ist nur dafür da, Traffic über den Connection-Pool zu erzeugen, den man während der Rotation beobachten kann.
 
+## Grundlagen
+
+### Wie ein Connection-Pool Zugangsdaten nutzt
+
+Die Anwendung öffnet nicht für jeden Request eine neue DB-Verbindung. Hikari hält einen Vorrat offener Verbindungen und verleiht sie an Requests. Für die Rotation zählen drei Eigenschaften:
+
+1. **Zugangsdaten zählen nur beim Login.** MySQL prüft User und Passwort beim Verbindungsaufbau. Eine offene Verbindung bleibt gültig, auch wenn das Passwort danach geändert oder verworfen wird.
+2. **Verbindungen leben lange, aber nicht ewig.** Hikari ersetzt jede Verbindung spätestens nach `maxLifetime` (hier 5 min) durch eine neue. Neue Verbindungen entstehen außerdem bei Lastspitzen und nach `idleTimeout`. Jeder dieser Aufbauten ist ein neuer Login.
+3. **Ohne Provider kennt Hikari nur die Zugangsdaten vom Start.** Username und Passwort kommen aus `spring.datasource.*`, also aus Env-Variablen, die der Container beim Start liest. Mit einem `HikariCredentialsProvider` fragt Hikari vor jedem Login neu nach.
+
+Daraus folgt, was beim naiven Vorgehen schiefgeht:
+
+| Vorgehen | Folge |
+|---|---|
+| Passwort in der DB ändern, Pods laufen weiter | Die Pods kennen nur das alte Passwort aus der Env-Variable. Offene Verbindungen arbeiten weiter, jeder neue Login scheitert. Spätestens nach `maxLifetime` ist der Pool leer, Requests warten `connectionTimeout` lang und schlagen fehl. |
+| Mit Provider: erst das Secret ändern, dann die DB | Neue Logins nutzen ein Passwort, das die DB noch nicht kennt. |
+| Mit Provider: erst die DB ändern, dann das Secret | Bis kubelet das Secret in den Pod geschrieben hat (bis zu 1 bis 2 Minuten), nutzen neue Logins das alte, schon ungültige Passwort. |
+
+Ohne Fehler geht es nur, wenn zwei Dinge zusammenkommen: eine Phase, in der alte und neue Zugangsdaten gleichzeitig gelten (MySQL Dual Password oder ein zweiter User), und ein Pool, der die neuen Zugangsdaten ohne Neustart erfährt (Provider und Secret-Volume).
+
+### Architektur
+
+```
+             change-password.sh / change-user.sh
+                │                            │
+ kubectl patch, │                            │ mysql -h $DB_HOST
+ annotate, exec │                            │ ALTER USER, Login-Test
+                ▼                            ▼
+┌─ Kubernetes ─────────────────────────┐   ┌─────────────┐
+│                                      │   │    MySQL    │
+│  Secret pool-db                      │   │  (DB_HOST)  │
+│  username · password · version       │   └─────────────┘
+│     │                                │          ▲
+│     │ kubelet schreibt ins Volume    │          │
+│     ▼                                │          │
+│  ┌─ Pod pool ──────────────────────┐ │          │
+│  │ /etc/pool-db/..data → ..<stand> │ │          │
+│  │    │                            │ │          │
+│  │    │ liest bei jedem Login      │ │          │
+│  │    ▼                            │ │          │
+│  │ SecretFileCredentialsProvider   │ │          │
+│  │    │                            │ │          │
+│  │    ▼                            │ │          │
+│  │ HikariDataSource ───────────────┼─┼──────────┘
+│  │    │                            │ │  Service mysql
+│  │    ▼                            │ │
+│  │ /actuator/dbcredentials         │ │
+│  └─────────────────────────────────┘ │
+└──────────────────────────────────────┘
+```
+
+- Das Skript spricht mit beiden Seiten. Mit MySQL direkt, um Zugangsdaten zu setzen und zu prüfen. Mit den Pods nur über die Kubernetes-API: Secret patchen, Pods annotieren, damit kubelet sofort synchronisiert, und per `exec` den Endpoint abfragen.
+- Die Anwendung bekommt neue Zugangsdaten nur über das Volume. Sie hat keine Verbindung zum Skript und muss nicht wissen, dass eine Rotation läuft.
+- kubelet legt jeden Secret-Stand in einem eigenen Verzeichnis ab und tauscht den Symlink `..data` atomar. Der Provider liest Username und Passwort über diesen Symlink, also immer aus demselben Stand.
+- `/actuator/dbcredentials` ist die Rückmeldung an das Skript. Erst wenn jeder Pod die neue `version` meldet, darf die DB die alten Zugangsdaten verwerfen.
+
+### Warum nicht einfach neu starten?
+
+`kubectl rollout restart` liest die Env-Variablen neu ein und kommt ohne Provider aus. Als Standardweg für Rotationen spricht einiges dagegen:
+
+- **Die DB-Seite bleibt gleich.** Während des Rollouts laufen alte und neue Pods parallel, und die alten bauen weiter neue Verbindungen auf. Ohne Dual Password oder zweiten User scheitern deren Logins. Der Neustart ersetzt nur den Provider, nicht die Phase mit zwei gültigen Zugangsdaten.
+- **Kosten pro Rotation.** Jeder Neustart bedeutet JVM-Start, leere Caches, Warm-up, eventuell Rebalancing von Kafka-Consumern oder eine neue Leader Election. Der Rollout dauert je nach `maxSurge`, Probes und PodDisruptionBudget. Bei häufiger Rotation, z. B. täglich oder automatisch durch einen Secret-Manager, summiert sich das.
+- **Mehrere Anwendungen pro User.** Teilen sich mehrere Deployments einen DB-User, müssen alle koordiniert neu starten, bevor das alte Passwort verworfen werden darf.
+- **Laufende Arbeit.** Lange Requests, Batch-Jobs oder offene Transaktionen brechen ab, wenn der Graceful Shutdown nicht reicht.
+
+Ein Neustart reicht, wenn selten rotiert wird, die Anwendung schnell startet und ein einziges Deployment den User nutzt. Mit Dual Password sieht das so aus: `ALTER USER ... RETAIN CURRENT PASSWORD`, Secret patchen, `kubectl rollout restart` und `rollout status` abwarten, dann `DISCARD OLD PASSWORD`. Der Neustart bleibt außerdem der schnellste Weg, ein kompromittiertes Passwort aus allen offenen Verbindungen zu entfernen.
+
 ## Bausteine
 
 | Teil | Wo | Aufgabe |
@@ -17,7 +84,7 @@ Die Anwendung selbst ist eine kleine Nachrichtenliste (`/api/messages`, Web-UI u
 | Rotation (A/B) | `change-user.sh` | zwischen zwei DB-Usern wechseln, ohne Dual Password |
 | Lasttest | `test.sh` | ruft die API jede Sekunde auf und zählt Fehler |
 
-Voraussetzungen: Docker, ein kind-Cluster mit Istio-Ingressgateway, eine lokale Registry auf `localhost:5001`, dazu `kubectl`, `helm`, `jq` und `openssl`.
+Voraussetzungen: Docker, ein kind-Cluster mit Istio-Ingressgateway, eine lokale Registry auf `localhost:5001`, dazu `kubectl`, `helm`, `jq`, `openssl` und der `mysql`-Client. Die Rotationsskripte sprechen MySQL direkt unter `DB_HOST:DB_PORT` aus `config.env` an.
 
 ## Ablauf
 
@@ -62,7 +129,9 @@ Außerdem legt es die User `pool_a` / `poolsecret_a` und `pool_b` / `poolsecret_
 ```bash
 helm upgrade --install pool ./pool-chart -n pool \
   --set image.repository=localhost:5001/pool \
-  --set image.tag=<TAG>
+  --set-string image.tag=<TAG> \
+  --set-string database.host=<DB_HOST> \
+  --set database.port=<DB_PORT>
 kubectl rollout status deployment/pool -n pool --timeout=180s
 ```
 
@@ -135,7 +204,7 @@ Alle Pool-Werte stehen explizit in `application.properties` (lokaler Start) und 
 ./change-password.sh 'MeinPasswort'
 ```
 
-Username und aktuelles Passwort liest das Skript aus dem Secret `pool-db`. Es meldet sich per `docker exec` im Container `mysql-pool` als `pool` selbst an.
+Username und aktuelles Passwort liest das Skript aus dem Secret `pool-db`. Es meldet sich mit dem lokalen `mysql`-Client unter `DB_HOST:DB_PORT` aus `config.env` als `pool` selbst an.
 
 ### Schritt 0: Passwort vormerken
 
@@ -208,6 +277,63 @@ Worauf man beim A/B-Wechsel achten muss:
 - Die Passwörter stehen in `db.sh` und `change-user.sh`. Wer sie an einer Stelle ändert, muss die andere nachziehen.
 
 Wie man das in eine bestehende Anwendung einbaut, steht in [switch.md](switch.md).
+
+## Rollback
+
+### Während einer Rotation
+
+Bricht `change-password.sh` vor Schritt 4 ab, gelten altes und neues Passwort. Es ist nichts kaputt, also gibt es nichts zurückzurollen. Das Skript erneut starten, es schließt dieselbe Rotation ab. Ein übergebenes Passwort ignoriert es dabei. Zurück auf das alte Passwort geht es erst nach dem Abschluss, siehe unten.
+
+Bei `change-user.sh` gilt dasselbe: Beide User bleiben gültig, ein erneuter Lauf setzt den Wechsel auf denselben User fort.
+
+### Nach einer Passwortrotation
+
+Typischer Anlass ist ein Client, den niemand auf dem Schirm hatte: ein Cronjob, ein Reporting-Tool, eine zweite Anwendung mit demselben DB-User. Er merkt die Rotation erst beim nächsten Login, oft Minuten oder Stunden nach Schritt 4.
+
+Zurück ohne Downtime:
+
+```bash
+./change-password.sh '<altes-passwort>'
+```
+
+Schritt 1 setzt das alte Passwort wieder als primäres und behält das aktuelle als zweites. Ab da funktioniert der vergessene Client wieder. Schritt 2 bis 4 stellen die Pods auf das alte Passwort um und verwerfen das neue.
+
+Voraussetzungen:
+
+- **Das alte Passwort ist bekannt.** Das Skript überschreibt es im Secret und speichert es nirgends. Wer einen Rückweg braucht, sichert es vor der Rotation, z. B. in einem Passwort-Safe:
+  ```bash
+  kubectl get secret pool-db -n pool -o jsonpath='{.data.password}' | base64 -d
+  ```
+- **MySQL erlaubt die Wiederverwendung.** Sind `password_history` oder `password_reuse_interval` gesetzt, global oder am User, lehnt `ALTER USER` das alte Passwort ab. Dann bleibt nur, den Client auf das neue Passwort umzustellen.
+
+Besser als jeder Rollback ist es, vorher alle Clients des Users zu kennen. Welche Hosts gerade verbunden sind, zeigt:
+
+```sql
+SELECT SUBSTRING_INDEX(host, ':', 1) AS client, COUNT(*)
+FROM information_schema.processlist WHERE user = 'pool' GROUP BY client;
+```
+
+Pods erkennt man an ihren IPs (`kubectl get pods -n pool -o wide`). Jeder andere Host ist ein Client, der die Rotation mitmachen muss. Die Abfrage zeigt nur Clients, die gerade verbunden sind. Ein Job, der einmal am Tag läuft, fehlt darin.
+
+### Nach einem User-Wechsel
+
+`./change-user.sh` erneut ausführen. Es schaltet auf den jeweils anderen User, in der DB ändert sich nichts.
+
+Ausnahme ist der erste Wechsel von `pool` auf `pool_a`. Ein zweiter Lauf geht auf `pool_b`, nicht zurück auf `pool`. Solange `pool` in der DB noch gültig ist, lässt sich das Secret von Hand zurückstellen:
+
+```bash
+VERSION=$(date +%Y%m%d%H%M%S)
+jq -n --arg p '<passwort-von-pool>' --arg v "$VERSION" \
+  '{stringData: {username: "pool", password: $p, version: $v}}' \
+  | kubectl patch secret pool-db -n pool --type merge --patch-file /dev/stdin
+kubectl annotate pods -n pool -l app=pool db-credentials/version="$VERSION" --overwrite
+```
+
+Das ist nur hier sicher, weil die DB `pool` noch akzeptiert. Den alten User deshalb erst sperren, wenn feststeht, dass kein Rückweg nötig ist.
+
+### Code-Rollback mit Helm
+
+Nicht `helm rollback` verwenden. Helm spielt dabei das gespeicherte Manifest der alten Revision ein, samt Secret mit dem Passwort von damals. Wurde seitdem rotiert, scheitern neue Verbindungen. Stattdessen den alten Image-Tag per `helm upgrade` neu ausrollen, siehe [pool-chart.md](pool-chart/pool-chart.md#zurück-auf-eine-frühere-version).
 
 ## Testen
 
