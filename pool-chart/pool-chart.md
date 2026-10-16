@@ -6,13 +6,17 @@ Release `pool` im Namespace `pool`. Alle Befehle aus dem Projekt-Root ausführen
 
 Voraussetzung: Image liegt in `localhost:5001/pool`, Namespace `pool` existiert mit `istio-injection=enabled`. Beides erledigt `install.sh`.
 
+`database.host` ist Pflicht. Ohne den Wert bricht das Chart mit `database.host fehlt (config.env)` ab. `<DB_HOST>` und `<DB_PORT>` sind die Werte aus `config.env`. Eine IP wird zu Service plus EndpointSlice, ein Hostname zu einem `ExternalName`-Service.
+
 ```bash
 kubectl create namespace pool --dry-run=client -o yaml | kubectl apply -f -
 kubectl label namespace pool istio-injection=enabled --overwrite
 
 helm install pool ./pool-chart -n pool \
   --set image.repository=localhost:5001/pool \
-  --set-string image.tag=<TAG>
+  --set-string image.tag=<TAG> \
+  --set-string database.host=<DB_HOST> \
+  --set database.port=<DB_PORT>
 ```
 
 Beim ersten Install legt das Chart das Secret `pool-db` mit `database.username` / `database.password` aus `values.yaml` an.
@@ -22,7 +26,9 @@ Beim ersten Install legt das Chart das Secret `pool-db` mit `database.username` 
 ```bash
 helm upgrade --install pool ./pool-chart -n pool \
   --set image.repository=localhost:5001/pool \
-  --set-string image.tag=<NEUER_TAG>
+  --set-string image.tag=<NEUER_TAG> \
+  --set-string database.host=<DB_HOST> \
+  --set database.port=<DB_PORT>
 kubectl rollout status deployment/pool -n pool --timeout=180s
 ```
 
@@ -38,18 +44,31 @@ Wird die DB neu aufgesetzt, kennt sie nur noch `pool` / `poolsecret`. Enthält d
 kubectl delete secret pool-db -n pool
 helm upgrade --install pool ./pool-chart -n pool \
   --set image.repository=localhost:5001/pool \
-  --set-string image.tag=<TAG>
+  --set-string image.tag=<TAG> \
+  --set-string database.host=<DB_HOST> \
+  --set database.port=<DB_PORT>
 kubectl rollout restart deployment/pool -n pool
 kubectl rollout status deployment/pool -n pool --timeout=180s
 ```
 
 Das Secret ist danach wieder auf dem Startwert (Version `initial`). `rollout restart` ist nötig, wenn sich `image.tag` nicht ändert, denn dann startet Helm keine neuen Pods. Laufende Pods mit kaputtem Pool würden sonst erst nach dem nächsten Volume-Sync von kubelet umstellen.
 
-Zurück auf eine frühere Revision:
+### Zurück auf eine frühere Version
+
+Nicht `helm rollback` verwenden. Helm rendert die Templates dabei nicht neu, sondern spielt das gespeicherte Manifest der Ziel-Revision ein. Darin steht das Secret mit dem Stand, den `lookup` damals gefunden hat. Wurde seitdem rotiert, schreibt kubelet ein verworfenes Passwort in die Pods, und neue Verbindungen scheitern mit `Access denied`.
+
+Stattdessen den alten Image-Tag mit `upgrade` neu ausrollen. Dabei übernimmt `lookup` das aktuelle Secret:
 
 ```bash
-helm rollback pool <REVISION> -n pool
+helm get values pool -n pool --revision <REVISION>   # image.tag der alten Revision
+helm upgrade --install pool ./pool-chart -n pool \
+  --set image.repository=localhost:5001/pool \
+  --set-string image.tag=<ALTER_TAG> \
+  --set-string database.host=<DB_HOST> \
+  --set database.port=<DB_PORT>
 ```
+
+Ist ein `helm rollback` schon passiert, kennt das Secret das aktuelle Passwort nicht mehr. Dann die DB als root an das Secret anpassen: `ALTER USER '<user>'@'%' IDENTIFIED BY '<passwort aus dem Secret>';`. Offene Verbindungen laufen weiter, neue Logins klappen wieder.
 
 ## Status
 
