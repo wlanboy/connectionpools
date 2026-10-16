@@ -29,6 +29,7 @@ Bricht das Skript vor Schritt 4 ab, bleiben beide Passwörter gültig. Ein erneu
 - **HikariCP ab 6.x.** Erst dort gibt es `HikariCredentialsProvider`. Dieses Projekt nutzt Spring Boot 4.1 mit Hikari 7.0.2. Die eingesetzte Version zeigt `mvn dependency:tree -Dincludes=com.zaxxer:HikariCP`. Bei älteren Boot-Versionen lässt sie sich über die Property `hikari.version` im `pom.xml` anheben.
 - **MySQL ab 8.0.14** für `RETAIN CURRENT PASSWORD` / `DISCARD OLD PASSWORD`. Andere Datenbanken haben kein Dual Password, dafür gibt es [switch.md](switch.md).
 - **Spring Boot Actuator**, damit das Skript den Stand je Pod abfragen kann.
+- **`mysql`-Client auf dem Rechner, der das Skript ausführt**, mit Netzwerkzugang zur DB (`DB_HOST`, `DB_PORT` aus `config.env`).
 - **`curl` im Container-Image.** Das Skript ruft den Endpoint per `kubectl exec ... curl` auf. Fehlt `curl`, die Abfrage auf `wget` oder `kubectl port-forward` umstellen.
 - **Rechte für das Skript.** Wer es ausführt, muss das Secret lesen und patchen sowie Pods auflisten, annotieren und `exec` ausführen dürfen.
 
@@ -169,7 +170,7 @@ Das Skript wählt die Pods über das Label `app: <name>` aus.
 | Stelle | Demo | Anpassen auf |
 |--------|------|--------------|
 | `APP`, `NAMESPACE`, `SECRET` | `pool`, `pool`, `pool-db` | Name der Anwendung, Namespace, Secret |
-| `mysql_as()` | `docker exec` in den Container `mysql-pool` | `mysql -h <db-host> -u"$DB_USER"` mit `MYSQL_PWD`, z. B. aus einem Job oder Bastion-Host |
+| `mysql_as()` | `mysql -h "$DB_HOST" -P "$DB_PORT"` mit `MYSQL_PWD`, Host und Port aus `config.env` | DB-Zugang der eigenen Umgebung, z. B. aus einem Job oder Bastion-Host |
 | `pod_synced()` | `curl localhost:8080/actuator/dbcredentials`, Container `-c "$APP"` | Management-Port und Container-Name der Anwendung |
 | Pod-Selector | `-l app="$APP"` | Label des Deployments |
 | `TIMEOUT` | 180 s | länger, wenn viele Pods oder langsame Starts |
@@ -221,3 +222,4 @@ Was das Skript absichert:
 - Die Env-Variable mit dem Passwort ist nach einer Rotation veraltet. Sie dient nur noch als Fallback, wenn die Datei nicht lesbar ist.
 - `change-password.sh` und `change-user.sh` erkennen gegenseitig eine unterbrochene Rotation (`pending-*`-Schlüssel) und brechen dann ab. Erst die unterbrochene Rotation abschließen.
 - Ein `helm upgrade` während einer unterbrochenen Rotation übernimmt die `pending-*`-Schlüssel per `lookup`. Das ist gewollt, der nächste Lauf setzt fort.
+- Das Skript speichert das alte Passwort nicht. Wie man zurückrotiert und warum `helm rollback` das Secret zurücksetzt, steht in [readme.md, Rollback](readme.md#rollback).
