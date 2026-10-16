@@ -87,7 +87,7 @@ Bei der Migration eines bestehenden Systems darf der aktive User zunächst der b
 |--------|------|--------------|
 | `APP`, `NAMESPACE`, `SECRET` | `pool`, `pool`, `pool-db` | Name der Anwendung, Namespace, Secret |
 | `PASSWORDS` | fest im Skript, gleiche Werte wie in `db.sh` | aus einem eigenen Secret oder Vault lesen, nicht im Skript speichern |
-| `can_login()` | `docker exec` in den Container `mysql-pool` | DB-Client gegen den echten DB-Host (`mysql`, `psql`, `sqlcmd`) |
+| `can_login()` | `mysql -h "$DB_HOST" -P "$DB_PORT"`, Host und Port aus `config.env` | DB-Client der eigenen Datenbank (`mysql`, `psql`, `sqlcmd`) |
 | `pod_synced()` | `curl localhost:8080/actuator/dbcredentials`, Container `-c "$APP"` | Management-Port und Container-Name |
 | Pod-Selector | `-l app="$APP"` | Label des Deployments |
 | User-Namen | `${APP}_a` / `${APP}_b` | eigene Namen |
@@ -148,3 +148,4 @@ Schritt 2 darf nicht fehlen. Das Passwort von `pool_a` darf sich erst ändern, w
 - Offene Verbindungen des alten Users laufen bis `max-lifetime` weiter. Soll der alte User sofort raus, zusätzlich `HikariPoolMXBean.softEvictConnections()` aufrufen oder die Pods neu starten.
 - Zwei User verdoppeln den Pflegeaufwand für Grants. Abweichende Rechte merkt man erst nach dem Wechsel.
 - Die Env-Variablen `SPRING_DATASOURCE_USERNAME` / `SPRING_DATASOURCE_PASSWORD` zeigen nach einem Wechsel den Stand beim Pod-Start. Sie dienen nur als Fallback.
+- Zurück geht es mit einem weiteren Lauf von `change-user.sh`, außer nach dem ersten Wechsel vom bisherigen Einzel-User. Details in [readme.md, Rollback](readme.md#rollback).
