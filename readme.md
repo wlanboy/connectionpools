@@ -103,6 +103,8 @@ mysql --version
 3. ./test.sh                in einem zweiten Terminal: Dauerlast
 4. ./change-password.sh     Passwort rotieren, test.sh meldet 0 Fehler
    oder ./change-user.sh    auf den anderen DB-User wechseln
+5. ./uninstall.sh           Helm-Release entfernen (Namespace bleibt)
+   ./db-uninstall.sh        MySQL-Container und Volume entfernen
 ```
 
 ## 1. db.sh

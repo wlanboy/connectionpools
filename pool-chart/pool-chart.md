@@ -83,8 +83,7 @@ kubectl get pods -n pool                    # laufen die Pods wirklich?
 ## Deinstallieren
 
 ```bash
-helm uninstall pool -n pool
-kubectl delete namespace pool               # optional
+./uninstall.sh                              # helm uninstall, Namespace bleibt
 ```
 
-Damit wird auch das Secret `pool-db` gelöscht. Ein neuer Install legt es wieder mit dem Passwort aus `values.yaml` an. Wurde vorher mit `change-password.sh` oder `change-user.sh` rotiert, passen die Zugangsdaten nicht mehr zur DB. Dann beim Install `--set database.username=<User> --set database.password=<Passwort>` mit den aktuellen Werten mitgeben oder die DB mit `db.sh` neu aufsetzen.
+Damit wird auch das Secret `pool-db` gelöscht. Enthält es rotierte Zugangsdaten (`version` ist nicht `initial`), bricht `uninstall.sh` ab, außer mit `--force`. Ein neuer Install legt es wieder mit dem Passwort aus `values.yaml` an. Wurde vorher mit `change-password.sh` oder `change-user.sh` rotiert, passen die Zugangsdaten nicht mehr zur DB. Dann beim Install `--set database.username=<User> --set database.password=<Passwort>` mit den aktuellen Werten mitgeben oder die DB mit `db.sh` neu aufsetzen.
