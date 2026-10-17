@@ -86,6 +86,14 @@ Ein Neustart reicht, wenn selten rotiert wird, die Anwendung schnell startet und
 
 Voraussetzungen: Docker, ein kind-Cluster mit Istio-Ingressgateway, eine lokale Registry auf `localhost:5001`, dazu `kubectl`, `helm`, `jq`, `openssl` und der `mysql`-Client. Die Rotationsskripte sprechen MySQL direkt unter `DB_HOST:DB_PORT` aus `config.env` an.
 
+Unter Ubuntu installieren (`kubectl` und `helm` kommen aus deren eigenen Paketquellen):
+
+```bash
+sudo apt update
+sudo apt install -y mysql-client jq openssl
+mysql --version
+```
+
 ## Ablauf
 
 ```
