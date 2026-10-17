@@ -16,6 +16,10 @@ set -euo pipefail
 
 source "$(dirname "$0")/config.env"
 
+for cmd in kubectl mysql jq base64; do
+  command -v "$cmd" >/dev/null || { echo "Benötigtes Kommando fehlt: $cmd" >&2; exit 1; }
+done
+
 APP=pool
 NAMESPACE=pool
 SECRET=$APP-db
